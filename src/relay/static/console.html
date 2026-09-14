@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>YAgent 中转服务 · 调试台</title>
+<style>
+  :root {
+    --bg: #0f1420; --panel: #171d2b; --panel2: #1e2537; --line: #2b344a;
+    --text: #e6ebf5; --dim: #8b97ad; --accent: #4a9eff; --ok: #38d39f;
+    --warn: #ffb648; --err: #ff6b6b; --purple: #b088ff;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font: 14px/1.6 "Segoe UI", "Microsoft YaHei", system-ui, sans-serif;
+  }
+  header {
+    padding: 14px 20px; background: var(--panel); border-bottom: 1px solid var(--line);
+    display: flex; align-items: center; gap: 14px; flex-wrap: wrap;
+  }
+  header h1 { font-size: 16px; margin: 0; font-weight: 600; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--err); display: inline-block; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  main { display: grid; grid-template-columns: 330px 1fr 300px; gap: 12px; padding: 12px; height: calc(100vh - 59px); }
+  .panel { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px; overflow: auto; }
+  .panel h2 { font-size: 13px; margin: 0 0 10px; color: var(--dim); text-transform: uppercase; letter-spacing: .5px; }
+  label { display: block; font-size: 12px; color: var(--dim); margin: 10px 0 4px; }
+  input, textarea, select, button {
+    width: 100%; background: var(--panel2); color: var(--text);
+    border: 1px solid var(--line); border-radius: 6px; padding: 7px 10px;
+    font: inherit; font-size: 13px; outline: none;
+  }
+  input:focus, textarea:focus, select:focus { border-color: var(--accent); }
+  textarea { font-family: "Cascadia Code", Consolas, monospace; resize: vertical; }
+  button { cursor: pointer; background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 500; margin-top: 10px; }
+  button:hover { filter: brightness(1.12); }
+  button.ghost { background: transparent; color: var(--text); border-color: var(--line); }
+  button.danger { background: var(--err); border-color: var(--err); }
+  .row { display: flex; gap: 8px; }
+  .row > * { flex: 1; }
+  #log { font-family: "Cascadia Code", Consolas, monospace; font-size: 12px; }
+  .msg { border-left: 3px solid var(--line); padding: 5px 10px; margin-bottom: 6px; background: var(--panel2); border-radius: 0 5px 5px 0; white-space: pre-wrap; word-break: break-all; }
+  .msg .t { color: var(--dim); font-size: 11px; }
+  .msg.in { border-left-color: var(--ok); }
+  .msg.out { border-left-color: var(--accent); }
+  .msg.err { border-left-color: var(--err); color: #ffc9c9; }
+  .msg.sys { border-left-color: var(--purple); color: var(--dim); }
+  .tag { display: inline-block; padding: 0 6px; border-radius: 4px; background: var(--line); font-size: 11px; margin-right: 6px; }
+  .client { padding: 7px 10px; background: var(--panel2); border-radius: 6px; margin-bottom: 6px; cursor: pointer; border: 1px solid transparent; }
+  .client:hover { border-color: var(--accent); }
+  .client .id { font-weight: 600; }
+  .client .sub { font-size: 11px; color: var(--dim); }
+  .checkline { display: flex; align-items: center; gap: 8px; margin-top: 10px; }
+  .checkline input { width: auto; }
+  .checkline label { margin: 0; }
+</style>
+</head>
+<body>
+<header>
+  <h1>YAgent 中转服务 · 调试台</h1>
+  <span><span class="dot" id="dot"></span> <span id="status">未连接</span></span>
+  <span style="color:var(--dim);font-size:12px" id="stat"></span>
+</header>
+
+<main>
+  <!-- 左：连接 -->
+  <section class="panel">
+    <h2>连接</h2>
+    <label>服务地址</label>
+    <input id="url" />
+    <label>我的 client_id</label>
+    <input id="cid" value="console-1" />
+    <label>分组（逗号分隔）</label>
+    <input id="groups" value="ui" />
+    <label>token（未配置鉴权则留空）</label>
+    <input id="token" placeholder="可留空" />
+    <div class="row">
+      <button id="btnConn">连接</button>
+      <button id="btnDisc" class="ghost">断开</button>
+    </div>
+
+    <h2 style="margin-top:22px">自动应答</h2>
+    <div class="checkline">
+      <input type="checkbox" id="autoReply" checked />
+      <label for="autoReply">别人 call 我时自动回复下面的内容</label>
+    </div>
+    <textarea id="replyBody" rows="4">{ "ok": true, "from": "console" }</textarea>
+  </section>
+
+  <!-- 中：发送 + 日志 -->
+  <section class="panel" style="display:flex;flex-direction:column">
+    <h2>发送</h2>
+    <div class="row">
+      <div>
+        <label>模式</label>
+        <select id="mode">
+          <option value="send">send（单向）</option>
+          <option value="call">call（等回复）</option>
+          <option value="broadcast">broadcast（广播/分组）</option>
+        </select>
+      </div>
+      <div>
+        <label id="toLabel">目标 client_id</label>
+        <input id="to" placeholder="对方的 client_id" />
+      </div>
+    </div>
+    <label>payload（JSON，也可填纯文本）</label>
+    <textarea id="body" rows="4">{ "cmd": "hello", "ts": 0 }</textarea>
+    <div class="row">
+      <button id="btnSend">发送</button>
+      <button id="btnClear" class="ghost">清空日志</button>
+    </div>
+
+    <h2 style="margin-top:18px">消息日志</h2>
+    <div id="log" style="flex:1;overflow:auto"></div>
+  </section>
+
+  <!-- 右：在线列表 -->
+  <section class="panel">
+    <h2>在线客户端 <span id="cnt" style="color:var(--accent)"></span></h2>
+    <button id="btnRefresh" class="ghost" style="margin-top:0">刷新</button>
+    <div id="clients" style="margin-top:10px"></div>
+    <h2 style="margin-top:18px">分组</h2>
+    <div id="groupsBox" style="font-size:12px;color:var(--dim)"></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const defaultWs = (location.protocol === 'https:' ? 'wss://' : 'ws://') + (location.host || '127.0.0.1:8770') + '/ws';
+$('url').value = defaultWs;
+
+let ws = null, connected = false, pending = new Map(), pingTimer = null;
+const newId = () => Math.random().toString(36).slice(2) + Date.now().toString(36);
+
+function log(kind, title, obj) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + kind;
+  const time = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+  let body = '';
+  if (obj !== undefined) {
+    try { body = '\n' + JSON.stringify(obj, null, 2); } catch { body = '\n' + String(obj); }
+  }
+  div.innerHTML = `<span class="t">${time}</span> <span class="tag">${title}</span>`;
+  div.appendChild(document.createTextNode(body));
+  const box = $('log');
+  box.appendChild(div);
+  box.scrollTop = box.scrollHeight;
+  while (box.children.length > 300) box.removeChild(box.firstChild);
+}
+
+function setStatus(on, text) {
+  connected = on;
+  $('dot').className = 'dot' + (on ? ' on' : '');
+  $('status').textContent = text;
+}
+
+function parseBody(text) {
+  const raw = text.trim();
+  if (!raw) return null;
+  try { return JSON.parse(raw); } catch { return raw; }
+}
+
+function rawSend(obj) {
+  if (!ws || ws.readyState !== WebSocket.OPEN) { log('err', '未连接'); return false; }
+  ws.send(JSON.stringify(obj));
+  return true;
+}
+
+$('btnConn').onclick = () => {
+  if (ws) { try { ws.close(); } catch {} }
+  const q = new URLSearchParams({ client_id: $('cid').value.trim() });
+  const g = $('groups').value.trim();
+  if (g) q.set('groups', g);
+  const t = $('token').value.trim();
+  if (t) q.set('token', t);
+  const url = $('url').value.trim() + '?' + q.toString();
+  log('sys', '连接中', url);
+  ws = new WebSocket(url);
+
+  ws.onopen = () => {
+    setStatus(true, '已连接');
+    pingTimer = setInterval(() => rawSend({ type: 'ping', id: newId() }), 20000);
+  };
+  ws.onclose = (e) => {
+    setStatus(false, `已断开 (${e.code})`);
+    clearInterval(pingTimer);
+    log('sys', '连接关闭', { code: e.code, reason: e.reason });
+  };
+  ws.onerror = () => log('err', '连接错误');
+  ws.onmessage = (evt) => {
+    let env; try { env = JSON.parse(evt.data); } catch { return log('err', '非法JSON', evt.data); }
+
+    if (env.type === 'ping') { rawSend({ type: 'pong', reply_to: env.id }); return; }
+    if (env.type === 'pong') return;
+
+    if (env.type === 'welcome') {
+      log('sys', 'welcome', env.payload);
+      refresh();
+      return;
+    }
+    if (env.type === 'list_result') {
+      renderClients(env.payload);
+      return;
+    }
+    if (env.type === 'presence') {
+      const p = env.payload || {};
+      log('sys', p.online ? `上线 ${p.client_id}` : `下线 ${p.client_id}`);
+      refresh();
+      return;
+    }
+    if (env.type === 'error') {
+      const ref = env.reply_to || (env.error || {}).ref;
+      if (ref && pending.has(ref)) { pending.delete(ref); }
+      log('err', 'error', env.error);
+      return;
+    }
+    if (env.type === 'reply') {
+      log('in', `reply ← ${env.from || '?'}`, env.payload);
+      pending.delete(env.reply_to);
+      return;
+    }
+    if (env.type === 'forward') {
+      log('in', `${env.expect_reply ? 'call' : 'send'} ← ${env.from}`, env.payload);
+      if (env.expect_reply && $('autoReply').checked) {
+        const body = parseBody($('replyBody').value);
+        rawSend({ type: 'reply', id: newId(), reply_to: env.id, payload: body });
+        log('out', `reply → ${env.from}`, body);
+      }
+      return;
+    }
+    if (env.type === 'broadcast') {
+      log('in', `broadcast ← ${env.from}${env.group ? ' @' + env.group : ''}`, env.payload);
+      return;
+    }
+    if (env.type === 'ack') { log('sys', 'ack', env.payload); return; }
+    log('sys', env.type, env);
+  };
+};
+
+$('btnDisc').onclick = () => { if (ws) ws.close(1000, 'manual'); };
+$('btnClear').onclick = () => { $('log').innerHTML = ''; };
+$('btnRefresh').onclick = () => refresh();
+
+$('mode').onchange = () => {
+  $('toLabel').textContent = $('mode').value === 'broadcast' ? '分组名（留空=全部）' : '目标 client_id';
+};
+
+$('btnSend').onclick = () => {
+  const mode = $('mode').value;
+  const to = $('to').value.trim();
+  const body = parseBody($('body').value);
+  const id = newId();
+  const me = $('cid').value.trim();
+
+  if (mode === 'broadcast') {
+    if (rawSend({ type: 'broadcast', id, from: me, group: to || null, payload: body })) {
+      log('out', `broadcast →${to ? ' @' + to : ' 全部'}`, body);
+    }
+    return;
+  }
+  if (!to) { log('err', '请填写目标 client_id'); return; }
+
+  if (mode === 'call') {
+    pending.set(id, Date.now());
+    if (rawSend({ type: 'send', id, from: me, to, payload: body, expect_reply: true, timeout: 30 })) {
+      log('out', `call → ${to}`, body);
+    }
+  } else {
+    if (rawSend({ type: 'send', id, from: me, to, payload: body, need_ack: true })) {
+      log('out', `send → ${to}`, body);
+    }
+  }
+};
+
+function refresh() {
+  if (connected) rawSend({ type: 'list', id: newId() });
+}
+
+function renderClients(data) {
+  const clients = (data && data.clients) || [];
+  $('cnt').textContent = clients.length ? `(${clients.length})` : '';
+  const box = $('clients');
+  box.innerHTML = '';
+  for (const c of clients) {
+    const el = document.createElement('div');
+    el.className = 'client';
+    el.innerHTML = `<div class="id">${c.client_id}</div>
+      <div class="sub">${c.connections} 连接${c.groups.length ? ' · ' + c.groups.join(', ') : ''}</div>`;
+    el.onclick = () => { $('to').value = c.client_id; };
+    box.appendChild(el);
+  }
+  const groups = (data && data.groups) || {};
+  $('groupsBox').textContent = Object.keys(groups).length
+    ? Object.entries(groups).map(([g, n]) => `${g}(${n})`).join('  ')
+    : '暂无分组';
+}
+
+setInterval(() => {
+  fetch('/health').then(r => r.json()).then(d => {
+    $('stat').textContent = `在线 ${d.online_clients} 客户端 / ${d.online_connections} 连接`;
+  }).catch(() => {});
+}, 3000);
+</script>
+</body>
+</html>

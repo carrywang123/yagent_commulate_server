@@ -1,0 +1,46 @@
+# --- YAgent 工作目录 ---
+.yagent/
+temp/
+
+# --- Blob Store 运行时上传文件 ---
+/blobs/
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+dist/
+*.egg-info/
+.eggs/
+.venv/
+venv/
+env/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+htmlcov/
+.coverage
+.coverage.*
+coverage.xml
+
+# --- 环境配置 ---
+.env
+.env.local
+*.local.toml
+
+# --- 日志 ---
+logs/
+*.log
+
+# --- 编辑器 / 系统 ---
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# --- Node（前端 demo 若引入依赖）---
+node_modules/
