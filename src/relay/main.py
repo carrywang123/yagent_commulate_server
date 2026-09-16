@@ -78,6 +78,21 @@ async def _maintenance_loop(app: FastAPI) -> None:
             logger.exception("maintenance loop error")
 
 
+async def _backfill_links(tracer: Any) -> None:
+    """把历史任务的链路字段补齐（升级后跑一次；已补齐时是廉价的空转）。"""
+    try:
+        result = await asyncio.to_thread(tracer.backfill_links)
+    except Exception:  # noqa: BLE001 —— 回填失败只影响历史数据的链路归属，不能拖垮服务
+        logger.warning("trace: 历史链路回填失败（不影响新数据）", exc_info=True)
+        return
+    if result.get("link_key") or result.get("parent") or result.get("cleared"):
+        logger.info(
+            "trace: 历史链路回填完成，重算 %s 条（链路改绑到真实执行会话），"
+            "共补出 %s 条任务的链路归属，当前共 %s 条父子关系",
+            result.get("cleared", 0), result["link_key"], result.get("parent", 0),
+        )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     settings: Settings = app.state.settings
@@ -106,6 +121,12 @@ async def lifespan(app: FastAPI):
             stats.get("events"),
             "永久" if tracer.prune_days <= 0 else f"{tracer.prune_days} 天",
         )
+        # 升级场景：老库里的历史任务没有链路字段，在后台补一次。
+        # 放后台是因为库大时这一次扫描不短，不能拖着服务不启动；
+        # 回填只做 UPDATE，与实时写入不冲突。
+        app.state.backfill_task = asyncio.create_task(
+            _backfill_links(tracer), name="relay-trace-backfill"
+        )
 
     task = asyncio.create_task(_maintenance_loop(app), name="relay-maintenance")
     app.state.maintenance_task = task
@@ -113,6 +134,9 @@ async def lifespan(app: FastAPI):
         yield
     finally:
         task.cancel()
+        backfill = getattr(app.state, "backfill_task", None)
+        if backfill is not None:
+            backfill.cancel()
         try:
             await task
         except (asyncio.CancelledError, Exception):
@@ -190,6 +214,13 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         if page.exists():
             return FileResponse(page, media_type="text/html")
         return JSONResponse({"service": "yagent-commulate-server", "docs": "/docs"})
+
+    @app.get("/trace-assets/{filename}", include_in_schema=False)
+    async def trace_asset(filename: str):
+        assets = {"trace-session.js": "application/javascript", "trace-explorer.css": "text/css"}
+        if filename not in assets:
+            return JSONResponse({"error": "not found"}, status_code=404)
+        return FileResponse(STATIC_DIR / filename, media_type=assets[filename])
 
     @app.get("/trace", include_in_schema=False)
     async def trace_console():

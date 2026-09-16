@@ -40,7 +40,17 @@ from typing import Any, Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
+
+#: v2 新增的 tasks 列。新库由 _DDL 直接建出来，老库靠 _migrate_locked 补。
+#: 两处必须保持一致，所以列名与类型集中在这里定义。
+TASK_COLUMNS_V2 = (
+    ("link_key", "TEXT DEFAULT ''"),
+    ("parent_task_id", "TEXT DEFAULT ''"),
+    ("handler_session_real", "TEXT DEFAULT ''"),
+)
+
+DEFAULT_SILENT_SECONDS = 200.0
 
 #: tasks 表的列顺序（UPSERT 与 row→dict 都以此为准）
 TASK_COLUMNS = (
@@ -71,6 +81,9 @@ TASK_COLUMNS = (
     "bytes_in",
     "hop",
     "ttl",
+    "link_key",
+    "parent_task_id",
+    "handler_session_real",
     "partial",
     "terminal",
     "chain",
@@ -136,6 +149,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     bytes_in          INTEGER DEFAULT 0,
     hop               INTEGER DEFAULT 1,
     ttl               INTEGER,
+    link_key             TEXT DEFAULT '',
+    parent_task_id       TEXT DEFAULT '',
+    handler_session_real TEXT DEFAULT '',
     partial           INTEGER DEFAULT 0,
     terminal          INTEGER DEFAULT 0,
     chain             TEXT    DEFAULT '[]',
@@ -179,6 +195,13 @@ CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, ts);
 CREATE INDEX IF NOT EXISTS idx_events_ts   ON events(ts DESC);
 """
 
+#: 链路相关的索引必须等到补列之后再建 —— 老库里这些列压根不存在，
+#: 跟 _DDL 一起 executescript 会直接报 "no such column"。
+_DDL_LINK_INDEXES = """
+CREATE INDEX IF NOT EXISTS idx_tasks_link   ON tasks(link_key, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+"""
+
 
 def _dumps(value: Any) -> str:
     try:
@@ -215,11 +238,35 @@ class TraceDB:
             self.conn.execute("PRAGMA journal_mode=WAL")
             self.conn.execute("PRAGMA synchronous=NORMAL")
             self.conn.executescript(_DDL)
+            #: 本次启动给老库补上的列（空 = 库已是最新结构）
+            self.migrated_columns = self._migrate_locked()
+            # 补完列才能建链路索引
+            self.conn.executescript(_DDL_LINK_INDEXES)
             self.conn.execute(
                 "INSERT OR REPLACE INTO meta(key, value) VALUES('schema_version', ?)",
                 (str(SCHEMA_VERSION),),
             )
             self.conn.commit()
+
+    def _migrate_locked(self) -> list[str]:
+        """给老库补列。调用方已持锁。
+
+        不能只靠 schema_version 判断：v1 的代码把版本号写进 meta 却从来没读过，
+        也没有任何 ALTER 逻辑。所以这里直接问 PRAGMA 看列到底在不在，
+        幂等且对任何历史版本都成立。
+
+        ADD COLUMN 在 SQLite 里不重写表，库再大也是瞬时完成。
+        """
+        cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(tasks)")}
+        added: list[str] = []
+        for name, decl in TASK_COLUMNS_V2:
+            if name in cols:
+                continue
+            self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {decl}")
+            added.append(name)
+        if added:
+            logger.info("trace: 已为老库补上列 %s", ",".join(added))
+        return added
 
     def close(self) -> None:
         with self.lock:
@@ -398,6 +445,326 @@ class TraceDB:
                 (cutoff, recent),
             ).fetchall()
         return [self._row_to_dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # 链路（会话对）
+    # ------------------------------------------------------------------
+
+    _NO_LINK = "(link_key IS NULL OR link_key = '')"
+
+    def clear_stale_link_keys(self, compute_key: Any) -> int:
+        """兼容旧方法名：直接改写不一致的键，不先清空；重复执行不再更新。"""
+        with self.lock:
+            rows = self.conn.execute(
+                "SELECT task_id, requester_session, handler_session, "
+                "handler_session_real, link_key FROM tasks"
+            ).fetchall()
+            updates = []
+            for row in rows:
+                key = compute_key(row["requester_session"],
+                                  row["handler_session_real"] or row["handler_session"])
+                if key and row["link_key"] and key != row["link_key"]:
+                    updates.append((key, row["task_id"]))
+            try:
+                self.conn.executemany(
+                    "UPDATE tasks SET link_key = ? WHERE task_id = ?", updates
+                )
+                self.conn.commit()
+            except sqlite3.Error:
+                self.conn.rollback()
+                raise
+        return len(updates)
+
+    def backfill_links(self, compute_key: Any, batch: int = 2000) -> dict[str, int]:
+        """给历史任务补 link_key 与 parent_task_id。
+
+        为什么不直接调 rebuild()：它会 `DELETE FROM tasks` 再全量重插，
+        与实时写入存在竞态 —— 重放期间新到的事件，其 tasks 行会被一并删掉。
+        回填只做 UPDATE，不删任何行，可以安全地在服务跑着的时候执行。
+
+        link_key 必须在 Python 里算（sha1 纯 SQL 做不了）；
+        parent 的时间区间判定反而一条 SQL 就够，且与实时推断口径等价：
+        「child 发起时 parent 还没结束」。
+        """
+        filled_links = 0
+        while True:
+            with self.lock:
+                rows = self.conn.execute(
+                    "SELECT task_id, requester_session, handler_session, handler_session_real "
+                    "FROM tasks "
+                    f"WHERE {self._NO_LINK} "
+                    "AND requester_session <> '' AND handler_session <> '' LIMIT ?",
+                    (batch,),
+                ).fetchall()
+            if not rows:
+                break
+            updates = []
+            for row in rows:
+                # 口径跟 Task.handler_target() 一致：优先真实执行会话，
+                # 没学到才退而用入口 ID。两边不一致会出两套 link_key。
+                target = row["handler_session_real"] or row["handler_session"]
+                key = compute_key(row["requester_session"], target)
+                if key:
+                    updates.append((key, row["task_id"]))
+            if not updates:
+                break
+            with self.lock:
+                try:
+                    self.conn.executemany(
+                        "UPDATE tasks SET link_key = ? WHERE task_id = ?", updates
+                    )
+                    self.conn.commit()
+                except sqlite3.Error:
+                    self.conn.rollback()
+                    raise
+            filled_links += len(updates)
+            if len(rows) < batch:
+                break
+
+        with self.lock:
+            try:
+                # 与实时推断口径一致（见 trace._infer_parent）：
+                # 候选不唯一时直接放弃，所以用 CASE WHEN COUNT(*)=1 而不是 ORDER BY + LIMIT 1。
+                self.conn.execute(
+                    """
+                    UPDATE tasks SET parent_task_id = COALESCE((
+                        SELECT CASE WHEN COUNT(*) = 1 THEN MIN(p.task_id) END
+                        FROM tasks p
+                        WHERE p.task_id <> tasks.task_id
+                          AND tasks.requester_session <> ''
+                          AND (p.handler_session = tasks.requester_session
+                               OR p.handler_session_real = tasks.requester_session)
+                          -- 排除反向回合（打回给父任务的发起方），那是同一条链路的下一步
+                          AND tasks.handler_session <> p.requester_session
+                          AND COALESCE(NULLIF(tasks.created_at, 0), tasks.first_seen)
+                              >= COALESCE(NULLIF(p.created_at, 0), p.first_seen, p.delivered_at) - 1
+                          AND COALESCE(NULLIF(tasks.created_at, 0), tasks.first_seen)
+                              <= COALESCE(p.finished_at, 9e18)
+                    ), '')
+                    WHERE parent_task_id IS NULL OR parent_task_id = ''
+                    """
+                )
+                self.conn.commit()
+                parents = self.conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE parent_task_id <> ''"
+                ).fetchone()[0]
+            except sqlite3.Error:
+                self.conn.rollback()
+                raise
+        if filled_links or parents:
+            logger.info("trace: 回填链路完成 link_key=%d parent=%d", filled_links, parents)
+        return {"link_key": filled_links, "parent": parents}
+
+    def _link_agg_sql(self, base: str, having: str) -> str:
+        """按 link_key 聚合。
+
+        turns_low_first 的小技巧：link_key = sha1(sorted(a,b))，而建键用的是
+        requester_session 与「真实执行会话」（handler_session_real 优先），
+        所以这里的比较必须用同一个口径，否则走协作入口的回合会把方向判反。
+        一条 SQL 就能拆出双向回合数，不用把每条链路的全部回合拉回内存。
+        """
+        return f"""
+            SELECT link_key,
+                   COUNT(*)                                                      AS turns,
+                   SUM(CASE WHEN terminal = 0 THEN 1 ELSE 0 END)                 AS active,
+                   SUM(CASE WHEN terminal = 0 AND last_activity < ? THEN 1 ELSE 0 END) AS silent,
+                   SUM(CASE WHEN state = 'failed'    THEN 1 ELSE 0 END)          AS failed,
+                   SUM(CASE WHEN state = 'done'      THEN 1 ELSE 0 END)          AS done,
+                   SUM(CASE WHEN state = 'notified'  THEN 1 ELSE 0 END)          AS notified,
+                   SUM(CASE WHEN state = 'cancelled' THEN 1 ELSE 0 END)          AS cancelled,
+                   SUM(CASE WHEN requester_session <
+                                 COALESCE(NULLIF(handler_session_real, ''), handler_session)
+                            THEN 1 ELSE 0 END)                                   AS turns_low_first,
+                   MIN(COALESCE(NULLIF(created_at, 0), first_seen))              AS first_at,
+                   MAX(last_activity)                                            AS last_at,
+                   SUM(CASE WHEN state = 'done'
+                            THEN finished_at - COALESCE(NULLIF(created_at, 0), first_seen)
+                       END)                                                      AS work_total
+            FROM tasks{base}
+            GROUP BY link_key{having}
+        """
+
+    def query_links(
+        self,
+        *,
+        since: Optional[float] = None,
+        until: Optional[float] = None,
+        user: str = "",
+        role: str = "all",
+        link_state: str = "all",
+        keyword: str = "",
+        limit: int = 50,
+        offset: int = 0,
+        silent_before: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """链路列表。过滤先作用在回合行上，再按会话对聚合。
+
+        注意 state 在链路层语义不同：“进行中”指「这条链路还有未终结的回合」，
+        而不是“只看未终结的回合”。所以给 _filters 传 state=all，自己用 HAVING 筛。
+        """
+        clause, args = self._filters(
+            since=since, until=until, user=user, role=role, state="all", keyword=keyword,
+        )
+        joiner = " AND " if clause else " WHERE "
+        base = f"{clause}{joiner}link_key <> ''"
+        cut = silent_before if silent_before is not None else time.time() - DEFAULT_SILENT_SECONDS
+
+        having = ""
+        if link_state == "active":
+            having = " HAVING active > 0"
+        elif link_state == "silent":
+            having = " HAVING silent > 0"
+        elif link_state == "failed":
+            having = " HAVING failed > 0"
+        elif link_state == "done":
+            having = " HAVING active = 0 AND failed = 0"
+        agg = self._link_agg_sql(base, having)
+
+        with self.lock:
+            total = self.conn.execute(
+                f"SELECT COUNT(*) FROM ({agg})", (cut, *args)
+            ).fetchone()[0]
+            # 进行中链路数必须走全量统计，不能只数当前页
+            active_total = self.conn.execute(
+                f"SELECT COUNT(*) FROM ({self._link_agg_sql(base, ' HAVING active > 0')})",
+                (cut, *args),
+            ).fetchone()[0]
+            rows = self.conn.execute(
+                f"{agg} ORDER BY (active > 0) DESC, last_at DESC LIMIT ? OFFSET ?",
+                (cut, *args, limit, offset),
+            ).fetchall()
+            # 会话 ID 缺失而无法归入任何链路的任务，必须诚实告知数量
+            orphans = self.conn.execute(
+                f"SELECT COUNT(*) FROM tasks{clause}{joiner}{self._NO_LINK}", args
+            ).fetchone()[0]
+        return {
+            "total": total,
+            "active_total": active_total,
+            "rows": [dict(r) for r in rows],
+            "orphan_tasks": orphans,
+            "silent_cut": cut,
+        }
+
+    def tasks_of_links(self, link_keys: list[str], cap: int = 20000) -> list[dict[str, Any]]:
+        """一次把若干条链路的回合全拉出来（避免 N+1），按发起时间升序。"""
+        if not link_keys:
+            return []
+        holders = ",".join("?" * len(link_keys))
+        with self.lock:
+            rows = self.conn.execute(
+                f"SELECT * FROM tasks WHERE link_key IN ({holders}) "
+                "ORDER BY link_key, COALESCE(NULLIF(created_at, 0), first_seen) ASC LIMIT ?",
+                (*link_keys, cap),
+            ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    def session_graph_rows(self, *, link_key: str = "", task_id: str = "") -> list[dict[str, Any]]:
+        """All records in the selected session-connected component, regardless of state.
+
+        Client namespaces matter for named entry targets. No parent-task inference.
+        """
+        from collections import defaultdict, deque
+        if not link_key and not task_id:
+            return []
+        with self.lock:
+            rows = [self._row_to_dict(r) for r in self.conn.execute(
+                "SELECT * FROM tasks ORDER BY COALESCE(NULLIF(created_at, 0), first_seen), task_id"
+            ).fetchall()]
+        sessions = defaultdict(list)
+        endpoints = []
+        seeds = []
+        for i, r in enumerate(rows):
+            pair = ((r['requester'], r['requester_session']),
+                    (r['handler'], r['handler_session_real'] or r['handler_session']))
+            pair = tuple(p for p in pair if p[1])
+            endpoints.append(pair)
+            for p in pair:
+                sessions[p].append(i)
+            if (r['task_id'] == task_id if task_id else r['link_key'] == link_key):
+                seeds.append(i)
+        queue = deque(seeds)
+        found = set(seeds)
+        seen_sessions = set()
+        while queue:
+            for p in endpoints[queue.popleft()]:
+                if p in seen_sessions:
+                    continue
+                seen_sessions.add(p)
+                for i in sessions[p]:
+                    if i not in found:
+                        found.add(i)
+                        queue.append(i)
+        return [r for i, r in enumerate(rows) if i in found]
+
+    def execution_graph_rows(self, *, link_key: str = "", task_id: str = "",
+                             cap: int = 500) -> tuple[list[dict[str, Any]], bool]:
+        """单次任务的祖先、后代与同树分支；UNION 去重保证环不会无限递归。"""
+        if not link_key and not task_id:
+            return [], False
+        seed = "task_id = ?" if task_id else "link_key = ?"
+        with self.lock:
+            rows = self.conn.execute(
+                f"""
+                WITH RECURSIVE family(task_id) AS (
+                    SELECT task_id FROM tasks WHERE {seed}
+                    UNION
+                    SELECT p.task_id FROM tasks t JOIN family f ON t.task_id = f.task_id
+                    JOIN tasks p ON p.task_id = t.parent_task_id
+                    UNION
+                    SELECT t.task_id FROM tasks t JOIN family f ON t.parent_task_id = f.task_id
+                    LIMIT ?
+                )
+                SELECT tasks.* FROM family JOIN tasks ON tasks.task_id = family.task_id
+                ORDER BY COALESCE(NULLIF(created_at, 0), first_seen), tasks.task_id
+                """, (task_id or link_key, cap + 1),
+            ).fetchall()
+        return [self._row_to_dict(r) for r in rows[:cap]], len(rows) > cap
+
+    def related_session_tasks(self, sessions: list[str], exclude_link: str) -> list[dict[str, Any]]:
+        """两端真实会话与第三方的全部通信；会话关联不代表因果关系。"""
+        sessions = [s for s in sessions if s]
+        if not sessions:
+            return []
+        holders = ",".join("?" for _ in sessions)
+        with self.lock:
+            rows = self.conn.execute(
+                f"SELECT * FROM tasks WHERE link_key <> ? AND ("
+                f"requester_session IN ({holders}) OR "
+                f"COALESCE(NULLIF(handler_session_real, ''), handler_session) IN ({holders})) "
+                "ORDER BY COALESCE(NULLIF(created_at, 0), first_seen), task_id",
+                (exclude_link, *sessions, *sessions),
+            ).fetchall()
+        return [self._row_to_dict(r) for r in rows]
+
+    def link_edges(self, link_keys: list[str]) -> list[dict[str, Any]]:
+        """链路之间的父子边（多级转发 A→B→C 就靠这个拼成树）。"""
+        if not link_keys:
+            return []
+        holders = ",".join("?" * len(link_keys))
+        with self.lock:
+            rows = self.conn.execute(
+                f"""
+                SELECT p.link_key AS parent_link, c.link_key AS child_link,
+                       COUNT(*) AS turns, MIN(c.task_id) AS sample_task
+                FROM tasks c JOIN tasks p ON c.parent_task_id = p.task_id
+                WHERE c.parent_task_id <> '' AND c.link_key <> '' AND p.link_key <> ''
+                  AND c.link_key <> p.link_key
+                  AND (p.link_key IN ({holders}) OR c.link_key IN ({holders}))
+                GROUP BY parent_link, child_link
+                """,
+                (*link_keys, *link_keys),
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def link_summary(self, link_key: str, silent_before: Optional[float] = None) -> Optional[dict[str, Any]]:
+        """单条链路的聚合行（详情页用，不受时间筛选影响）。"""
+        cut = silent_before if silent_before is not None else time.time() - DEFAULT_SILENT_SECONDS
+        agg = self._link_agg_sql(" WHERE link_key = ?", "")
+        with self.lock:
+            row = self.conn.execute(agg, (cut, link_key)).fetchone()
+        if row is None or not row["link_key"]:
+            return None
+        return dict(row)
 
     # ------------------------------------------------------------------
     # 统计

@@ -6,6 +6,8 @@
 | 方法 | 路径 | 用途 |
 |---|---|---|
 | GET | /api/trace/overview | 顶部 KPI + 左侧用户列表（含在线状态） |
+| GET | /api/trace/links | **链路列表**：按会话对聚合的多轮往返 |
+| GET | /api/trace/links/{link_key} | 单条链路的完整回合时间轴 |
 | GET | /api/trace/tasks | 任务列表，按用户 / 角色 / 状态 / 关键词 / 时间段过滤，可分页 |
 | GET | /api/trace/tasks/{task_id} | 单任务时间线 |
 | GET | /api/trace/tasks/{task_id}/events | 该任务的原始事件明细（含每一轮 probe）|
@@ -198,6 +200,56 @@ async def list_tasks(
     }
 
 
+@trace_router.get("/links", summary="链路列表（按会话对聚合的多轮往返）")
+async def list_links(
+    request: Request,
+    user: str = Query("", description="按用户名过滤；语义是「包含此人的链路」"),
+    role: str = Query("all", pattern="^(all|sent|handled)$"),
+    state: str = Query("all", pattern="^(all|active|silent|failed|done)$", description="链路级状态"),
+    q: str = Query("", description="关键词：摘要 / task_id / conv_id / 会话ID"),
+    days: Optional[int] = Query(None, ge=0, le=3650),
+    from_: Optional[str] = Query(None, alias="from"),
+    to: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    recent: int = Query(3, ge=0, le=50, description="每条链路预览几个最近回合"),
+) -> dict[str, Any]:
+    """一对会话一行，把 A→B→A→B 的多轮往返串成一条链路。
+
+    为什么不能用 conv_id 串：hub.ts 的 sendRequest 每次都 `CV-${randomUUID()}`，
+    conv_id 实际上是「单次往返 ID」，只能盖住一次 request + 它的 response。
+    所以链路靠的是会话对（无序），见 trace.make_link_key。
+
+    过滤先作用在回合上再聚合，所以 `days=7` 的意思是
+    「这七天内有过回合的链路」，而不是「七天内新建的链路」。
+    """
+    _guard(request)
+    store = _store(request)
+    now = time.time()
+    since, until = _range(store, days, from_, to)
+    data = await asyncio.to_thread(
+        store.query_links,
+        since=since, until=until, user=user, role=role,
+        link_state=state, keyword=q, limit=limit, offset=offset, recent=recent,
+    )
+    data.update({"ts": now, "offset": offset, "limit": limit, "since": since, "until": until})
+    return data
+
+
+@trace_router.get("/links/{link_key}", summary="单条链路的完整回合时间轴")
+async def link_detail(link_key: str, request: Request) -> dict[str, Any]:
+    """不受时间筛选限制 —— 点开一条链路就是要看它的全部历史。"""
+    _guard(request)
+    store = _store(request)
+    data = await asyncio.to_thread(store.get_link, link_key)
+    if data is None:
+        raise HTTPException(
+            status_code=404,
+            detail={"code": "NOT_FOUND", "message": f"没有找到链路 {link_key}"},
+        )
+    return {"ts": time.time(), "link": data}
+
+
 @trace_router.get("/tasks/{task_id}", summary="单个任务的完整时间线")
 async def task_detail(task_id: str, request: Request) -> dict[str, Any]:
     _guard(request)
@@ -208,7 +260,10 @@ async def task_detail(task_id: str, request: Request) -> dict[str, Any]:
             status_code=404,
             detail={"code": "NOT_FOUND", "message": f"没有找到任务 {task_id}"},
         )
-    return {"ts": time.time(), "task": task.detail()}
+    detail = task.detail()
+    detail["session_graph"] = await asyncio.to_thread(store.session_graph, task_id=task_id)
+    detail["execution_graph"] = await asyncio.to_thread(store.execution_graph, task_id=task_id)
+    return {"ts": time.time(), "task": detail}
 
 
 @trace_router.get("/tasks/{task_id}/events", summary="任务的原始事件明细")

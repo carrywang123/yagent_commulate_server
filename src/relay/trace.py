@@ -39,6 +39,7 @@ payload 只留摘要（默认 200 字符）与字节数，不留全文。
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -48,6 +49,8 @@ from collections import OrderedDict
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterable, Optional
+
+from .trace_graph import build_execution_graph, task_timing
 
 logger = logging.getLogger(__name__)
 
@@ -139,6 +142,29 @@ def unwrap_crossnode(payload: Any) -> Optional[dict[str, Any]]:
     if not isinstance(envelope.get("msg_id"), str) or not isinstance(envelope.get("type"), str):
         return None
     return envelope
+
+
+def make_link_key(session_a: str, session_b: str) -> str:
+    """两个会话之间的链路标识（**无序对**）。
+
+    链路 = 一对会话之间的「边」，而不是某个会话本身。这点很关键：
+    A 的同一个会话可能同时找 B 和 C 干活，那是两条链路；
+    按单个会话分组会把它们糊在一起，按人分组更糟（A 用两个会话找 B
+    做两件不相干的事也会被合并）。
+
+    排序后再哈希，保证 A→B 与 B→A 落到同一条链路 —— 这正是把
+    「A→B→A→B」多轮往返串成一条线的地基。
+
+    取 sha1 前 16 位而不是直接拼接：会话 ID 是 UUID，拼出来 70+ 字符，
+    既撑大索引又没法安全放进 URL 路径。原始两个会话 ID 仍在
+    requester_session / handler_session 里，随时可还原。
+    """
+    a = (session_a or "").strip()
+    b = (session_b or "").strip()
+    if not a or not b:
+        return ""
+    low, high = sorted((a, b))
+    return hashlib.sha1(f"{low}|{high}".encode("utf-8")).hexdigest()[:16]
 
 
 def parse_probe_task(msg_id: str) -> Optional[str]:
@@ -247,6 +273,13 @@ class Task:
     bytes_in: int = 0                # response 的 payload 大小
     hop: int = 1
     ttl: Optional[int] = None
+    #: 会话对链路标识（无序），见 make_link_key
+    link_key: str = ""
+    #: 多级转发推断出的父任务：B 在处理 A 的请求期间从同一会话发起了去 C 的请求
+    parent_task_id: str = ""
+    #: 对端**实际执行**的会话。走协作入口时 handler_session 是入口 ID（如
+    #: desk-control），真实会话要等 response / probe_ack 回来才知道
+    handler_session_real: str = ""
     chain: list[dict[str, Any]] = field(default_factory=list)
     #: 没见到发起帧就先见到回复（Relay 重启后半途接入），数据不完整
     partial: bool = False
@@ -255,6 +288,18 @@ class Task:
     @property
     def terminal(self) -> bool:
         return self.state in TERMINAL_STATES
+
+    def handler_target(self) -> str:
+        """建链路时该用的处理方会话。
+
+        优先真实执行会话：走协作入口时 handler_session 只是入口 ID，
+        不是对端真正干活的那个会话。还没学到真实会话时先用入口 ID 兑着，
+        等回帧回来再改绑（见 TaskAggregator._rebind_link）。
+
+        这个口径必须与 trace_db 的回填 SQL 保持一致，否则实时写入与历史
+        回填会算出两套不同的 link_key。
+        """
+        return self.handler_session_real or self.handler_session
 
     def duration(self, now: Optional[float] = None) -> float:
         end = self.finished_at or (now or time.time())
@@ -276,6 +321,7 @@ class Task:
         if self.started_at:
             work = max(0.0, (self.finished_at or now) - self.started_at)
         return {
+            **task_timing(self.to_row(), now),
             "task_id": self.task_id,
             "conv_id": self.conv_id,
             "kind": self.kind,
@@ -304,6 +350,15 @@ class Task:
             "bytes_in": self.bytes_in,
             "hop": self.hop,
             "ttl": self.ttl,
+            "link_key": self.link_key,
+            "parent_task_id": self.parent_task_id,
+            "handler_session_real": self.handler_session_real,
+            #: 走协作入口时入口 ID 与真实执行会话不一致，界面需要标出来
+            "via_endpoint": bool(
+                self.handler_session_real
+                and self.handler_session
+                and self.handler_session_real != self.handler_session
+            ),
             "terminal": self.terminal,
             "silent": self.silent(now),
             "partial": self.partial,
@@ -347,6 +402,9 @@ class Task:
             "bytes_in": self.bytes_in,
             "hop": self.hop,
             "ttl": self.ttl,
+            "link_key": self.link_key,
+            "parent_task_id": self.parent_task_id,
+            "handler_session_real": self.handler_session_real,
             "partial": 1 if self.partial else 0,
             "terminal": 1 if self.terminal else 0,
             "chain": self.chain,
@@ -382,6 +440,9 @@ class Task:
         task.bytes_in = int(row.get("bytes_in") or 0)
         task.hop = int(row.get("hop") or 1)
         task.ttl = row.get("ttl")
+        task.link_key = row.get("link_key") or ""
+        task.parent_task_id = row.get("parent_task_id") or ""
+        task.handler_session_real = row.get("handler_session_real") or ""
         task.partial = bool(row.get("partial"))
         chain = row.get("chain")
         task.chain = chain if isinstance(chain, list) else []
@@ -419,8 +480,122 @@ class TaskAggregator:
         self.max_timeline = max_timeline
         self.tasks: "OrderedDict[str, Task]" = OrderedDict()
         self.ignored = 0  # 无法归因到任务的事件数（只做自检用）
+        #: 会话 → 它正在处理的外来任务 id（仅未终结的）。
+        #: 用于多级转发 A→B→C 的父子推断，见 _infer_parent。
+        self.open_by_session: dict[str, list[str]] = {}
 
     # ---------- 内部 ----------
+
+    def _index_open(self, task: Task) -> None:
+        """把未终结任务挂到它的处理会话下。
+
+        入口 ID 与真实执行会话两个键都挂：走协作入口时，对端 agent
+        再转发出去的请求用的是**真实会话**，只挂入口 ID 就对不上了。
+        """
+        for sess in (task.handler_session, task.handler_session_real):
+            if not sess:
+                continue
+            bucket = self.open_by_session.setdefault(sess, [])
+            if task.task_id not in bucket:
+                bucket.append(task.task_id)
+
+    def _unindex(self, task: Task) -> None:
+        for sess in (task.handler_session, task.handler_session_real):
+            bucket = self.open_by_session.get(sess)
+            if not bucket:
+                continue
+            if task.task_id in bucket:
+                bucket.remove(task.task_id)
+            if not bucket:
+                self.open_by_session.pop(sess, None)
+
+    def _ensure_link_key(self, task: Task) -> None:
+        """算出会话对链路标识。
+
+        链路建在**真实执行会话**上：走协作入口时 handler_session 只是入口 ID
+        （desk-control / yaya-collab 这种人取的名字），对端真正干活的是入口
+        派生出来的会话。绑到入口上会把「A 对这个入口派的所有活」糊成一条，
+        而它们其实是一对多的独立对话。
+
+        时序上有个坎：发起时还不知道真实会话，要等对端回帧才学得到。
+        所以这里允许**改绑一次** —— 从入口键切到真实会话键。见 _rebind_link。
+        """
+        if task.link_key:
+            return
+        key = make_link_key(task.requester_session, task.handler_target())
+        if key:
+            task.link_key = key
+
+    def _learn_real_session(self, task: Task, event: dict[str, Any]) -> None:
+        """从对端回帧（response / error / probe_ack）学到真实执行会话。
+
+        只能用回复类帧：cancel 是发起方发的，它的 from_session 是发起方。
+        """
+        sess = str(event.get("from_session") or "")
+        if not sess or task.handler_session_real == sess:
+            return
+        self._unindex(task)
+        task.handler_session_real = sess
+        # 之前按入口 ID 建的链路要改绑到真实会话上
+        self._rebind_link(task)
+        if not task.terminal:
+            self._index_open(task)
+
+    def _rebind_link(self, task: Task) -> None:
+        """真实执行会话到手后，把链路从入口键改绑到真实会话键。
+
+        为什么允许改：发起帧里 handler_session 是入口 ID，那时候没法知道
+        对端会派哪个会话来干活。等 response/probe_ack 回来才有真实会话，
+        此时必须把这条任务挪到正确的链路上，否则同一次对话的来回两个方向
+        会落在两条链路里（去程按入口、回程按真实会话）。
+
+        可随新回帧校正；旧的会话索引在学习新会话前移除。
+        """
+        new_key = make_link_key(task.requester_session, task.handler_target())
+        if new_key and new_key != task.link_key:
+            task.link_key = new_key
+
+    def _infer_parent(self, task: Task) -> None:
+        """多级转发 A→B→C 的父子推断。
+
+        协议层帮不上忙：hub.ts 的 sendRequest 里 chain 永远是 `[本机]`、
+        hop 永远是 1（chain 只在 response **回传**方向累积），所以 B 转发给 C
+        的请求与 A 的请求没有任何机器可读的关联。
+
+        只能靠「B 在处理 A 的请求期间，从同一个会话发起了去 C 的请求」推断，
+        这建立在「一个 agent 会话串行执行」这个事实上。所以一旦同一会话上同时
+        挂着多个未终结的外来任务，前提就不成立了 —— 此时**宁缺毋滥**，
+        直接放弃，不塞一个错的父亲给看板。推断结果在接口上以 parent_task_id
+        暴露，界面上明确标为“推断”。
+        """
+        sess = task.requester_session
+        if not sess or task.parent_task_id:
+            return
+        start = task.created_at or task.first_seen
+        if not start:
+            return
+        matches: list[str] = []
+        for tid in self.open_by_session.get(sess, ()):
+            if tid == task.task_id:
+                continue
+            parent = self.tasks.get(tid)
+            if parent is None or parent.terminal:
+                continue
+            # 排除反向回合：child 打回给 parent 的发起方，那是同一条链路的
+            # 下一个回合（B 回头问 A），不是多级转发。真正的转发必须是找**第三方**。
+            if task.handler_session and task.handler_session == parent.requester_session:
+                continue
+            # 下界用发起时刻而不是投递时刻：created_at 来自信封，
+            # delivered_at 是埋点时刻，两者在补录/重放场景下会错位。
+            # 语义上也更准：child 不可能在 parent 发起之前就是它的子任务。
+            begin = parent.created_at or parent.first_seen or parent.delivered_at
+            if not begin or start < begin - 1.0:
+                continue
+            matches.append(parent.task_id)
+            if len(matches) > 1:
+                return  # 同一会话同时挂着多个任务 → 无法归因，放弃
+        if len(matches) == 1:
+            task.parent_task_id = matches[0]
 
     def _touch(self, task: Task, ts: float) -> None:
         task.last_activity = max(task.last_activity, ts)
@@ -485,7 +660,9 @@ class TaskAggregator:
                     break
             if victim is None:
                 victim = next(iter(self.tasks))
-            self.tasks.pop(victim, None)
+            dropped = self.tasks.pop(victim, None)
+            if dropped is not None:
+                self._unindex(dropped)
 
     def _get_or_create(self, task_id: str, ts: float) -> Task:
         task = self.tasks.get(task_id)
@@ -504,6 +681,8 @@ class TaskAggregator:
         if message:
             task.error_message = message
         self._touch(task, ts)
+        # 终结了就不再能做别人的父任务
+        self._unindex(task)
 
     # ---------- 对外 ----------
 
@@ -550,6 +729,11 @@ class TaskAggregator:
                 else:
                     task.state = STATE_SENT
                     task.state_at = ts
+            self._ensure_link_key(task)
+            # 先推断父任务（此时自己还没进索引，不会自己当自己的父亲），再入索引
+            self._infer_parent(task)
+            if not task.terminal:
+                self._index_open(task)
             self._touch(task, ts)
             self._push(task, event)
             return task.task_id
@@ -575,6 +759,8 @@ class TaskAggregator:
                 self._finish(task, STATE_FAILED, ts, relay_err, event.get("error_message") or "")
             else:
                 self._finish(task, STATE_NOTIFIED, ts)
+            self._ensure_link_key(task)
+            self._infer_parent(task)
             self._push(task, event)
             return task.task_id
 
@@ -591,6 +777,10 @@ class TaskAggregator:
                 task.requester = event["to_client"]
                 task.requester_session = event.get("to_session") or ""
             task.conv_id = task.conv_id or (event.get("conv_id") or "")
+            # 只有回复类帧的 from 才是处理方；cancel 是发起方发的，不能用
+            if etype in ("response", "error", "probe_ack"):
+                self._learn_real_session(task, event)
+            self._ensure_link_key(task)
 
             if etype == "response":
                 task.bytes_in = int(event.get("bytes") or 0)
@@ -941,6 +1131,207 @@ class TraceStore:
     def known_clients(self) -> list[str]:
         """出现在追踪数据里的所有用户名（含已离线的历史用户）。"""
         return self.db.known_clients() if self.db is not None else []
+
+    # ---------- 链路视图 ----------
+
+    @staticmethod
+    def _endpoints_of(rows: list[dict[str, Any]]) -> tuple[dict[str, str], dict[str, str]]:
+        """从回合行里解出链路两端的身份。
+
+        处理方一律取**真实执行会话**，跟 Task.handler_target() 同口径：
+        link_key 就是用它算的，这里若用入口 ID，详情页显示的双方会与
+        链路自身的分组依据对不上（甚至解出第三个会话）。
+
+        用 sorted 规范化，与 link_key 的排序口径一致，这样无论哪一回合是
+        A→B 还是 B→A，算出来的 a / b 都稳定不变。
+        """
+        sessions: dict[str, str] = {}
+        for row in rows:
+            handler_sess = (row.get("handler_session_real") or "").strip() \
+                or (row.get("handler_session") or "")
+            for sess, client in (
+                (row.get("requester_session"), row.get("requester")),
+                (handler_sess, row.get("handler")),
+            ):
+                sess = (sess or "").strip()
+                if sess and client and sess not in sessions:
+                    sessions[sess] = client
+        ordered = sorted(sessions.items())
+        low = ordered[0] if ordered else ("", "")
+        high = ordered[1] if len(ordered) > 1 else ("", "")
+        return (
+            {"session": low[0], "client": low[1]},
+            {"session": high[0], "client": high[1]},
+        )
+
+    def _build_link(
+        self,
+        agg_row: dict[str, Any],
+        turns: list[Task],
+        now: float,
+        recent: int = 3,
+    ) -> dict[str, Any]:
+        rows = [t.to_row() for t in turns]
+        side_a, side_b = self._endpoints_of(rows)
+        low_session = side_a["session"]
+
+        # 球在谁手上：全部未终结回合的处理方都列出来。
+        # A 连发两条没等回复时会有多个，不能只显示最新的那个。
+        ball: list[dict[str, Any]] = []
+        for task in turns:
+            if task.terminal:
+                continue
+            ball.append(
+                {
+                    "client": task.handler,
+                    "session": task.handler_session_real or task.handler_session,
+                    "task_id": task.task_id,
+                    "state": task.state,
+                    "since": task.state_at or task.created_at,
+                    "summary": task.summary,
+                    # 需求：链路的每一段单独告警，所以静默标记打在回合上
+                    "silent": task.silent(now),
+                }
+            )
+
+        active = int(agg_row.get("active") or 0)
+        failed = int(agg_row.get("failed") or 0)
+        state = "active" if active else ("failed" if failed else "done")
+        low_first = int(agg_row.get("turns_low_first") or 0)
+        total_turns = int(agg_row.get("turns") or 0)
+
+        brief_turns = [t.brief(now) for t in turns]
+        for item, task in zip(brief_turns, turns):
+            item["direction"] = (
+                "a2b" if task.requester_session == low_session else "b2a"
+            )
+        return {
+            "link_key": agg_row.get("link_key") or "",
+            "a": side_a,
+            "b": side_b,
+            "turns": total_turns,
+            "turns_a_to_b": low_first,
+            "turns_b_to_a": max(0, total_turns - low_first),
+            "state": state,
+            "active_turns": active,
+            "failed_turns": failed,
+            "silent_turns": int(agg_row.get("silent") or 0),
+            "done_turns": int(agg_row.get("done") or 0),
+            "notified_turns": int(agg_row.get("notified") or 0),
+            "cancelled_turns": int(agg_row.get("cancelled") or 0),
+            "first_at": agg_row.get("first_at") or 0.0,
+            "last_at": agg_row.get("last_at") or 0.0,
+            "span": max(0.0, (agg_row.get("last_at") or 0.0) - (agg_row.get("first_at") or 0.0)),
+            "work_total": agg_row.get("work_total"),
+            "ball_at": ball,
+            # 走协作入口时入口 ID ≠ 真实执行会话，链路可能不完整，必须标出
+            "via_endpoint": any(item.get("via_endpoint") for item in brief_turns),
+            "execution_unconfirmed_turns": sum(not t.handler_session_real for t in turns),
+            "recent_turns": brief_turns[-recent:] if recent else brief_turns,
+            "all_turns": brief_turns,
+        }
+
+    def query_links(
+        self,
+        *,
+        since: Optional[float] = None,
+        until: Optional[float] = None,
+        user: str = "",
+        role: str = "all",
+        link_state: str = "all",
+        keyword: str = "",
+        limit: int = 50,
+        offset: int = 0,
+        recent: int = 3,
+    ) -> dict[str, Any]:
+        """链路列表：一对会话一行，内含它们之间的全部回合。"""
+        if self.db is None:
+            return {"total": 0, "active_total": 0, "links": [], "orphan_tasks": 0, "edges": []}
+        now = time.time()
+        page = self.db.query_links(
+            since=since, until=until, user=user, role=role, link_state=link_state,
+            keyword=keyword, limit=limit, offset=offset,
+            silent_before=now - SILENT_AFTER_SECONDS,
+        )
+        keys = [row["link_key"] for row in page["rows"]]
+        grouped: dict[str, list[Task]] = {key: [] for key in keys}
+        for row in self.db.tasks_of_links(keys):
+            task = self._merge_live(Task.from_row(row))
+            grouped.setdefault(row["link_key"], []).append(task)
+
+        links = [
+            self._build_link(row, grouped.get(row["link_key"], []), now, recent=recent)
+            for row in page["rows"]
+        ]
+        return {
+            "total": page["total"],
+            "active_total": page.get("active_total", 0),
+            "links": links,
+            "orphan_tasks": page["orphan_tasks"],
+            "edges": self.db.link_edges(keys),
+        }
+
+    def get_link(self, link_key: str) -> Optional[dict[str, Any]]:
+        """单条链路的完整回合时间轴（不受时间筛选限制）。"""
+        if self.db is None or not link_key:
+            return None
+        now = time.time()
+        agg = self.db.link_summary(link_key, silent_before=now - SILENT_AFTER_SECONDS)
+        if agg is None:
+            return None
+        turns = [
+            self._merge_live(Task.from_row(row))
+            for row in self.db.tasks_of_links([link_key])
+        ]
+        data = self._build_link(agg, turns, now, recent=0)
+        data["edges"] = self.db.link_edges([link_key])
+        data["related_tasks"] = [
+            Task.from_row(row).brief(now)
+            for row in self.db.related_session_tasks(
+                [data["a"]["session"], data["b"]["session"]], link_key
+            )
+        ]
+        data["session_graph"] = self.session_graph(link_key=link_key)
+        data["execution_graph"] = self.execution_graph(link_key=link_key)
+        return data
+
+    def session_graph(self, *, link_key: str = "", task_id: str = "") -> dict[str, Any]:
+        now = time.time()
+        rows = self.db.session_graph_rows(link_key=link_key, task_id=task_id) if self.db else []
+        nodes = [Task.from_row(r).brief(now) for r in rows]
+        for n in nodes:
+            n['selected'] = n['task_id'] == task_id if task_id else n['link_key'] == link_key
+        return dict(mode='sessions', nodes=nodes, edges=[], roots=[], truncated=False,
+                    warnings=[], relation_basis='按会话关联全部通信；不代表任务父子因果，不按完成状态过滤。',
+                    timing_basis='显示首条至末条记录的时间跨度，不作为任务执行耗时。')
+
+    def execution_graph(self, *, link_key: str = "", task_id: str = "") -> dict[str, Any]:
+        if self.db is None:
+            return build_execution_graph([], set(), time.time())
+        rows, truncated = self.db.execution_graph_rows(link_key=link_key, task_id=task_id)
+        now = time.time()
+        selected = {r["task_id"] for r in rows if (
+            r["task_id"] == task_id if task_id else r["link_key"] == link_key
+        )}
+        return build_execution_graph(
+            [Task.from_row(row).brief(now) for row in rows], selected, now, truncated
+        )
+
+    def backfill_links(self) -> dict[str, int]:
+        """给历史任务补链路字段（升级后跑一次）。
+
+        原子改写旧 key，不先置空；重复运行不更新已正确的 key。
+        与事件写入共用锁，并同步热缓存，避免旧缓存覆盖迁移结果。
+        """
+        if self.db is None:
+            return {"link_key": 0, "parent": 0, "cleared": 0}
+        with self.lock:
+            cleared = self.db.clear_stale_link_keys(make_link_key)
+            result = self.db.backfill_links(make_link_key)
+            for task in self.agg.tasks.values():
+                self.agg._rebind_link(task)
+            result["cleared"] = cleared
+            return result
 
     def stats(self) -> dict[str, Any]:
         with self.lock:
