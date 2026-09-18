@@ -219,7 +219,20 @@ def build_event(
         "origin": origin,
     }
     if etype in ("request", "notify", "response"):
-        event["summary"] = summarize_payload(payload, summary_chars)
+        # agent 显式上报的摘要优先；没有就回落到截断正文（旧行为）。
+        # 回落而不是置空，是为了老客户端与历史数据在看板上不至于突然变成空白。
+        declared = envelope.get("summary")
+        if isinstance(declared, str) and declared.strip():
+            event["summary"] = _WS_RE.sub(" ", declared).strip()[:summary_chars]
+        else:
+            event["summary"] = summarize_payload(payload, summary_chars)
+        # 仅供看板关联使用，不参与任何投递判定
+        parent_msg_id = str(envelope.get("parent_msg_id") or "")
+        if parent_msg_id:
+            event["parent_msg_id"] = parent_msg_id
+        task_status = str(envelope.get("task_status") or "")
+        if task_status in ("in_progress", "success", "failed"):
+            event["task_status"] = task_status
     if etype == "probe_ack":
         state = payload.get("state") if isinstance(payload, dict) else None
         event["peer_state"] = str(state or "")
@@ -275,8 +288,13 @@ class Task:
     ttl: Optional[int] = None
     #: 会话对链路标识（无序），见 make_link_key
     link_key: str = ""
-    #: 多级转发推断出的父任务：B 在处理 A 的请求期间从同一会话发起了去 C 的请求
+    #: 多级转发的父任务。优先用协议直接给的 parent_msg_id；
+    #: 没有才回落到 _infer_parent 的推断（老客户端 / agent 漏填）
     parent_task_id: str = ""
+    #: agent 上报的**业务**状态（in_progress / success / failed）。
+    #: 空 = 未上报（老客户端或宿主代回复）。与传输层 state 正交：
+    #: state 说“这条消息通没通”，task_status 说“整条任务链走完了没有”。
+    task_status: str = ""
     #: 对端**实际执行**的会话。走协作入口时 handler_session 是入口 ID（如
     #: desk-control），真实会话要等 response / probe_ack 回来才知道
     handler_session_real: str = ""
@@ -352,6 +370,7 @@ class Task:
             "ttl": self.ttl,
             "link_key": self.link_key,
             "parent_task_id": self.parent_task_id,
+            "task_status": self.task_status,
             "handler_session_real": self.handler_session_real,
             #: 走协作入口时入口 ID 与真实执行会话不一致，界面需要标出来
             "via_endpoint": bool(
@@ -404,6 +423,7 @@ class Task:
             "ttl": self.ttl,
             "link_key": self.link_key,
             "parent_task_id": self.parent_task_id,
+            "task_status": self.task_status,
             "handler_session_real": self.handler_session_real,
             "partial": 1 if self.partial else 0,
             "terminal": 1 if self.terminal else 0,
@@ -442,6 +462,7 @@ class Task:
         task.ttl = row.get("ttl")
         task.link_key = row.get("link_key") or ""
         task.parent_task_id = row.get("parent_task_id") or ""
+        task.task_status = row.get("task_status") or ""
         task.handler_session_real = row.get("handler_session_real") or ""
         task.partial = bool(row.get("partial"))
         chain = row.get("chain")
@@ -567,6 +588,8 @@ class TaskAggregator:
         挂着多个未终结的外来任务，前提就不成立了 —— 此时**宁缺毋滥**，
         直接放弃，不塞一个错的父亲给看板。推断结果在接口上以 parent_task_id
         暴露，界面上明确标为“推断”。
+
+        协议已经给出 parent 时不走这里：那是 agent 亲口说的，比任何推断都准。
         """
         sess = task.requester_session
         if not sess or task.parent_task_id:
@@ -686,6 +709,43 @@ class TaskAggregator:
 
     # ---------- 对外 ----------
 
+    def _apply_trace_fields(self, task: Task, event: dict[str, Any]) -> None:
+        """消费 agent 上报的追踪字段。
+
+        协议给的 parent 优先于 _infer_parent 的推断 —— 那是 agent 亲口说的，
+        而推断在异步场景下本身就不成立（B 异步派发后 run 就结束了，
+        欠 A 的回复还挂着，此时 inbound 表里会同时存在多条）。
+        """
+        parent = str(event.get("parent_msg_id") or "")
+        # 防自环：agent 万一把自己的 msg_id 填进来，会把递归 CTE 拖进死循环
+        if parent and parent != task.task_id:
+            task.parent_task_id = parent
+        status = str(event.get("task_status") or "")
+        if status in ("in_progress", "success", "failed"):
+            task.task_status = status
+
+    def _backfill_parent_status(self, task: Task, ts: float) -> None:
+        """把结果回推带来的业务结果回填给原任务。
+
+        两个维度各管各的，这里只动业务维度：
+          state（传输）    —— notify 投递成功即 notified，**立即终结**，不受这里影响；
+          task_status（业务）—— 异步任务发出时是 in_progress，任务链还在跑，
+                              直到对方回推结果才变成 success/failed。
+
+        回推自己也是一条独立消息，所以只做“把结论传给父亲”，不合并两条记录
+        （events 是真相，不丢数据）。
+        """
+        if task.task_status not in ("success", "failed"):
+            return
+        if not task.parent_task_id:
+            return
+        parent = self.tasks.get(task.parent_task_id)
+        if parent is None:
+            return
+        parent.task_status = task.task_status
+        # 任务链有新进展，刷新活跃时间，否则看板会误以为这条链早就没动静了
+        self._touch(parent, ts)
+
     def apply(self, event: dict[str, Any]) -> Optional[str]:
         """吃进一条事件，返回受影响的 task_id（无法归因则 None）。"""
         etype = event.get("ev")
@@ -730,7 +790,8 @@ class TaskAggregator:
                     task.state = STATE_SENT
                     task.state_at = ts
             self._ensure_link_key(task)
-            # 先推断父任务（此时自己还没进索引，不会自己当自己的父亲），再入索引
+            self._apply_trace_fields(task, event)
+            # 协议没给 parent 时才推断（此时自己还没进索引，不会自己当自己的父亲），再入索引
             self._infer_parent(task)
             if not task.terminal:
                 self._index_open(task)
@@ -739,7 +800,9 @@ class TaskAggregator:
             return task.task_id
 
         if etype == "notify":
-            # 单向通知，协议上不会有回执，收下即终态
+            # 单向通知，协议上不会有回执，收下即终态。
+            # 注意：这说的是**这条消息**的传输状态。整条任务链是否走完是另一回事，
+            # 由 task_status 表达：异步任务发出时是 in_progress，直到对方回推结果。
             task = self.tasks.get(msg_id) or Task(task_id=msg_id, first_seen=ts)
             self.tasks[msg_id] = task
             self._evict()
@@ -755,12 +818,16 @@ class TaskAggregator:
             task.bytes_out = int(event.get("bytes") or 0)
             task.delivered = delivered
             task.delivered_at = ts if delivered else None
+            self._apply_trace_fields(task, event)
             if relay_err:
                 self._finish(task, STATE_FAILED, ts, relay_err, event.get("error_message") or "")
             else:
                 self._finish(task, STATE_NOTIFIED, ts)
             self._ensure_link_key(task)
             self._infer_parent(task)
+            # 回推到达：把业务结果传给它指向的原任务
+            self._backfill_parent_status(task, ts)
+            self._touch(task, ts)
             self._push(task, event)
             return task.task_id
 
@@ -786,6 +853,11 @@ class TaskAggregator:
                 task.bytes_in = int(event.get("bytes") or 0)
                 if not task.started_at:
                     task.started_at = task.delivered_at or task.first_seen
+                # 对方上报的业务结果：可能是 failed —— 消息通了但活儿没干成。
+                # 不写到 state 上：state 回答的是传输层，两个维度必须分开。
+                status = str(event.get("task_status") or "")
+                if status in ("in_progress", "success", "failed"):
+                    task.task_status = status
                 self._finish(task, STATE_DONE, ts)
             elif etype == "error":
                 self._finish(

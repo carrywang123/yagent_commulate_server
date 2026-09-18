@@ -40,7 +40,7 @@ from typing import Any, Iterable, Optional
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 
 #: v2 新增的 tasks 列。新库由 _DDL 直接建出来，老库靠 _migrate_locked 补。
 #: 两处必须保持一致，所以列名与类型集中在这里定义。
@@ -48,6 +48,23 @@ TASK_COLUMNS_V2 = (
     ("link_key", "TEXT DEFAULT ''"),
     ("parent_task_id", "TEXT DEFAULT ''"),
     ("handler_session_real", "TEXT DEFAULT ''"),
+)
+
+#: v3 新增的 tasks 列。
+#: task_status 是 agent 上报的**业务**状态，与传输层 state 正交：
+#: state 回答“这条消息通没通”，task_status 回答“整条任务链走完了没有”。
+#: 典型例子：异步通知投递成功即 state=notified（终结），
+#: 但 task_status 会停在 in_progress，直到对方回推结果才变成 success/failed。
+TASK_COLUMNS_V3 = (
+    ("task_status", "TEXT DEFAULT ''"),
+)
+
+#: v3 新增的 events 列。
+#: 必须跟 tasks 一起补：events 是真相、tasks 是可重建的派生数据，
+#: 只写 tasks 不写 events 的话，一旦执行 rebuild_tasks 重放，这些字段会静默丢失。
+EVENT_COLUMNS_V3 = (
+    ("parent_msg_id", "TEXT"),
+    ("task_status", "TEXT"),
 )
 
 DEFAULT_SILENT_SECONDS = 200.0
@@ -84,6 +101,7 @@ TASK_COLUMNS = (
     "link_key",
     "parent_task_id",
     "handler_session_real",
+    "task_status",
     "partial",
     "terminal",
     "chain",
@@ -113,6 +131,8 @@ EVENT_COLUMNS = (
     "hop",
     "ttl",
     "created_at",
+    "parent_msg_id",
+    "task_status",
 )
 
 _DDL = f"""
@@ -152,6 +172,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     link_key             TEXT DEFAULT '',
     parent_task_id       TEXT DEFAULT '',
     handler_session_real TEXT DEFAULT '',
+    task_status          TEXT DEFAULT '',
     partial           INTEGER DEFAULT 0,
     terminal          INTEGER DEFAULT 0,
     chain             TEXT    DEFAULT '[]',
@@ -188,7 +209,9 @@ CREATE TABLE IF NOT EXISTS events (
     summary       TEXT,
     hop           INTEGER,
     ttl           INTEGER,
-    created_at    REAL
+    created_at    REAL,
+    parent_msg_id TEXT,
+    task_status   TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, ts);
@@ -200,6 +223,7 @@ CREATE INDEX IF NOT EXISTS idx_events_ts   ON events(ts DESC);
 _DDL_LINK_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_tasks_link   ON tasks(link_key, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
+CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(task_status, created_at DESC);
 """
 
 
@@ -257,13 +281,18 @@ class TraceDB:
 
         ADD COLUMN 在 SQLite 里不重写表，库再大也是瞬时完成。
         """
-        cols = {row["name"] for row in self.conn.execute("PRAGMA table_info(tasks)")}
         added: list[str] = []
-        for name, decl in TASK_COLUMNS_V2:
-            if name in cols:
-                continue
-            self.conn.execute(f"ALTER TABLE tasks ADD COLUMN {name} {decl}")
-            added.append(name)
+        # 表名与列定义均来自模块常量，不含外部输入
+        for table, columns in (
+            ("tasks", TASK_COLUMNS_V2 + TASK_COLUMNS_V3),
+            ("events", EVENT_COLUMNS_V3),
+        ):
+            cols = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}
+            for name, decl in columns:
+                if name in cols:
+                    continue
+                self.conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {decl}")
+                added.append(f"{table}.{name}")
         if added:
             logger.info("trace: 已为老库补上列 %s", ",".join(added))
         return added

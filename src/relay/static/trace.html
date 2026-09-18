@@ -191,6 +191,22 @@
   .row .rail { position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px;
     border-radius: 0 3px 3px 0; background: var(--c, var(--ink-5)); }
 
+  /* 调用链：按 parent_msg_id 串起来的任务树，缩进表示层级。
+     回答的是「这次任务经过了谁」，与下方会话图的「这两个会话处得怎么样」互补 */
+  .chain { margin: 0 0 14px; border: 1px solid var(--line-2); border-radius: 10px; overflow: hidden; }
+  .chead { padding: 8px 12px; font-size: 12px; color: var(--ink-3);
+    background: var(--fill); border-bottom: 1px solid var(--line-2); }
+  .crow { display: flex; align-items: center; gap: 8px; font-size: 13px; cursor: pointer;
+    padding: 7px 12px 7px calc(12px + var(--d, 0) * 18px);
+    border-left: 3px solid var(--c, var(--ink-5)); border-bottom: 1px solid var(--line-soft); }
+  .crow:last-child { border-bottom: 0; }
+  .crow:hover { background: var(--fill); }
+  .crow.cur { background: var(--accent-tint); font-weight: 600; }
+  .cw { white-space: nowrap; color: var(--ink-2); }
+  .cw .dir { margin: 0 5px; color: var(--ink-5); }
+  .csum { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis;
+    white-space: nowrap; color: var(--ink-3); }
+
   .link-directions { margin-top:8px; font-size:12px; color:var(--ink-3); line-height:1.7; overflow-wrap:anywhere; }
   .l1 { display: flex; align-items: center; gap: 10px; min-width: 0; flex-wrap:wrap; }
   .l2 { display: flex; align-items: baseline; gap: 10px; margin-top: 8px; padding-left: 0; min-width: 0; }
@@ -469,6 +485,14 @@
     failed: { t: '有失败', v: 'r', run: false },
     done:   { t: '已完成', v: 'g', run: false }
   };
+  /* agent 上报的业务状态。与传输层 state 正交：
+     state 回答「消息通没通」，task_status 回答「这活儿干成了没有」。
+     必须交叉看 —— 对端执行失败但规规矩矩回了条「我失败了」，
+     传输层看到的是一次成功的 response，只看 state 会把它显示成「已完成」。 */
+  var BIZ = {
+    failed:      { t: '任务失败', v: 'r', run: false },
+    in_progress: { t: '等待回推', v: 'b', run: true  }
+  };
   var STATE_OPTS = {
     links: [['all', '全部链路'], ['active', '进行中'], ['silent', '有静默段'],
             ['failed', '有失败段'], ['done', '已全部完成']],
@@ -499,6 +523,15 @@
   function full(ts) { return formatDate(ts, true); }
   function ago(ts) { return ts ? dur(Date.now() / 1000 - ts) + '前' : ''; }
   function sm(s) { return STATE[s] || { t: s || '未知', v: 'd', run: false }; }
+  /** 传输状态 × 业务状态 交叉后的最终展示。未上报业务状态时完全维持旧行为。 */
+  function sm2(t) {
+    var base = sm(t.state), biz = t.task_status || '';
+    if (!biz) return base;                    // 未上报：老客户端或宿主代回复
+    if (biz === 'failed') return BIZ.failed;  // 通了但没干成，这是最要紧的一类
+    // 传输层已终结但任务链还在跑：异步通知发出后等对方回推结果
+    if (biz === 'in_progress' && !base.run) return BIZ.in_progress;
+    return base;
+  }
   function lm(L) {
     if (L.active_turns) return LINK.active;
     if (L.failed_turns) return LINK.failed;
@@ -694,13 +727,18 @@
       return;
     }
     var html = S.tasks.map(function (t) {
-      var m = sm(t.state);
+      var m = sm2(t);
       var ws = t.requester && t.requester === t.handler;
       var bits = '';
       if (t.kind === 'notify' && t.state !== 'notified') bits += bit('b', '单向通知');
       if (t.silent) bits += bit('y', '已静默');
       if (t.error_code) bits += bit('r', t.error_code);
       if (t.via_endpoint) bits += bit('y', '经入口');
+      // 业务失败但消息本身是通的：把传输层结果保留成小标，避免看成“没送到”
+      if (t.task_status === 'failed' && (t.state === 'done' || t.state === 'notified')) {
+        bits += bit('d', sm(t.state).t);
+      }
+      if (t.parent_task_id) bits += bit('p', '子任务');
 
       return '<div class="row' + (S.selected === t.task_id ? ' on' : '') + '" data-id="' +
           esc(t.task_id) + '" style="--c:' + (VCOLOR[m.v] || VCOLOR.d)[1] + '">' +
@@ -757,11 +795,44 @@
   }
 
   // ============================================================ 任务详情
+  /** 把 execution_graph 的节点按 parent_task_id 排成一棵树。
+   *  数据来自后端的递归 CTE（祖先 + 后代），这里只负责排版。
+   *  只有一个节点时不渲染——孤任务没有“链”可言。 */
+  function chainTree(g, currentId) {
+    var nodes = (g && g.nodes) || [];
+    if (nodes.length < 2) return '';
+    var byId = {}, kids = {}, roots = [];
+    nodes.forEach(function (n) { byId[n.task_id] = n; kids[n.task_id] = []; });
+    nodes.forEach(function (n) {
+      var p = n.parent_task_id;
+      if (p && byId[p]) kids[p].push(n); else roots.push(n);
+    });
+    var out = [];
+    function walk(n, depth) {
+      var m = sm2(n), c = VCOLOR[m.v] || VCOLOR.d;
+      out.push('<div class="crow' + (n.task_id === currentId ? ' cur' : '') +
+          '" data-chain="' + esc(n.task_id) + '" style="--c:' + c[1] + ';--d:' + depth + '">' +
+        '<span class="cw">' + esc(n.requester || '?') + '<span class="dir">→</span>' +
+          esc(n.handler || '?') + '</span>' +
+        pill(m) +
+        '<span class="csum">' +
+          (esc(n.summary) || '<span class="none">（无摘要）</span>') + '</span>' +
+      '</div>');
+      kids[n.task_id].forEach(function (k) { walk(k, depth + 1); });
+    }
+    roots.forEach(function (r) { walk(r, 0); });
+    return '<div class="chain"><div class="chead">调用链 · 共 ' + nodes.length + ' 个任务' +
+      (g.truncated ? '（已截断）' : '') + '，点击可跳转</div>' + out.join('') + '</div>';
+  }
+
   function taskDetail(t) {
     if (t.session_graph && window.TraceSessionExplorer) {
       $('d-title').textContent = '会话通信链路 · ' + t.requester + ' → ' + t.handler;
       $('d-id').textContent = '当前会话直接上游一层＋下游 · ' + t.task_id;
       window.TraceSessionExplorer.mount($('d-body'), t.session_graph, {taskId:t.task_id,viewerClient:S.user});
+      // 调用链插在会话图之前：先回答“这次任务经过了谁”，再看会话关系
+      var chain = chainTree(t.execution_graph, t.task_id);
+      if (chain) $('d-body').insertAdjacentHTML('afterbegin', chain);
       return;
     }
     $('d-body').innerHTML = '<div class="note y">当前服务尚未启用新版执行图。请使用新版服务；不退回丢失上游的旧式跳转。</div>';
@@ -994,6 +1065,11 @@
     if (tk) openTask(tk.getAttribute('data-id'));
   });
   $('d-close').addEventListener('click', close);
+  // 调用链行点击：在同一个抽屉里跳到另一个任务，不关闭抽屉
+  $('d-body').addEventListener('click', function (e) {
+    var c = e.target.closest('[data-chain]');
+    if (c) openTask(c.getAttribute('data-chain'));
+  });
   $('backdrop').addEventListener('click', close);
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
 
