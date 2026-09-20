@@ -50,21 +50,15 @@ TASK_COLUMNS_V2 = (
     ("handler_session_real", "TEXT DEFAULT ''"),
 )
 
-#: v3 新增的 tasks 列。
-#: task_status 是 agent 上报的**业务**状态，与传输层 state 正交：
-#: state 回答“这条消息通没通”，task_status 回答“整条任务链走完了没有”。
-#: 典型例子：异步通知投递成功即 state=notified（终结），
-#: 但 task_status 会停在 in_progress，直到对方回推结果才变成 success/failed。
-TASK_COLUMNS_V3 = (
-    ("task_status", "TEXT DEFAULT ''"),
-)
-
 #: v3 新增的 events 列。
 #: 必须跟 tasks 一起补：events 是真相、tasks 是可重建的派生数据，
 #: 只写 tasks 不写 events 的话，一旦执行 rebuild_tasks 重放，这些字段会静默丢失。
+#:
+#: 注：早期版本还补过一列 task_status（agent 上报的业务状态）。
+#: 该设计已废弃：任务成败完全由传输层 state 表达（发出去、对方返回即成功）。
+#: 已存在的库里那两列不再读写，也不主动删除（SQLite 删列会连带索引，得不偿失）。
 EVENT_COLUMNS_V3 = (
     ("parent_msg_id", "TEXT"),
-    ("task_status", "TEXT"),
 )
 
 DEFAULT_SILENT_SECONDS = 200.0
@@ -101,7 +95,6 @@ TASK_COLUMNS = (
     "link_key",
     "parent_task_id",
     "handler_session_real",
-    "task_status",
     "partial",
     "terminal",
     "chain",
@@ -132,7 +125,6 @@ EVENT_COLUMNS = (
     "ttl",
     "created_at",
     "parent_msg_id",
-    "task_status",
 )
 
 _DDL = f"""
@@ -172,7 +164,6 @@ CREATE TABLE IF NOT EXISTS tasks (
     link_key             TEXT DEFAULT '',
     parent_task_id       TEXT DEFAULT '',
     handler_session_real TEXT DEFAULT '',
-    task_status          TEXT DEFAULT '',
     partial           INTEGER DEFAULT 0,
     terminal          INTEGER DEFAULT 0,
     chain             TEXT    DEFAULT '[]',
@@ -210,8 +201,7 @@ CREATE TABLE IF NOT EXISTS events (
     hop           INTEGER,
     ttl           INTEGER,
     created_at    REAL,
-    parent_msg_id TEXT,
-    task_status   TEXT
+    parent_msg_id TEXT
 );
 
 CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id, ts);
@@ -223,7 +213,6 @@ CREATE INDEX IF NOT EXISTS idx_events_ts   ON events(ts DESC);
 _DDL_LINK_INDEXES = """
 CREATE INDEX IF NOT EXISTS idx_tasks_link   ON tasks(link_key, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_parent ON tasks(parent_task_id);
-CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(task_status, created_at DESC);
 """
 
 
@@ -284,7 +273,7 @@ class TraceDB:
         added: list[str] = []
         # 表名与列定义均来自模块常量，不含外部输入
         for table, columns in (
-            ("tasks", TASK_COLUMNS_V2 + TASK_COLUMNS_V3),
+            ("tasks", TASK_COLUMNS_V2),
             ("events", EVENT_COLUMNS_V3),
         ):
             cols = {row["name"] for row in self.conn.execute(f"PRAGMA table_info({table})")}

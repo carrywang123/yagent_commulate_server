@@ -34,7 +34,12 @@ probe / probe_ack / cancel 六种信封全部走 `send`，都必须经过 Relay 
 
 ## 隐私
 
-payload 只留摘要（默认 200 字符）与字节数，不留全文。
+payload 默认会保留**完整正文**（`trace_payload_chars`，默认 20000 字符），
+以便在看板上直接查看请求内容。这意味着**经本中继转发的消息正文
+会落到本机数据库**，包括其他客户端发来的内容。
+
+把 `trace_payload_chars` 设为 0 可以回到旧行为：只留 200 字摘要与字节数，
+不留全文。
 """
 
 from __future__ import annotations
@@ -119,6 +124,40 @@ def summarize_payload(payload: Any, limit: int) -> str:
     return text[:limit]
 
 
+def payload_text(payload: Any, limit: int) -> str:
+    """取业务 payload 的**完整正文**，用于看板详情展示。
+
+    和 summarize_payload 的取值口径一致（同一组 _SUMMARY_KEYS），但：
+      - 不把换行压成空格，保留原排版；
+      - 不按摘要长度截断。
+
+    limit 只是防弹保护：异常巨大的 payload（比如误传文件）不应该把
+    中继的库撑爆，超过就截断并在末尾标明。
+    """
+    if payload is None:
+        return ""
+    text: Optional[str] = None
+    if isinstance(payload, str):
+        text = payload
+    elif isinstance(payload, dict):
+        for key in _SUMMARY_KEYS:
+            value = payload.get(key)
+            if isinstance(value, str) and value.strip():
+                text = value
+                break
+        if text is None:
+            try:
+                text = json.dumps(payload, ensure_ascii=False, indent=2)
+            except (TypeError, ValueError):
+                text = str(payload)
+    else:
+        text = str(payload)
+    text = (text or "").strip()
+    if limit > 0 and len(text) > limit:
+        return text[:limit] + f"\n…已截断，原文共 {len(text)} 字符"
+    return text
+
+
 def payload_bytes(payload: Any) -> int:
     if payload is None:
         return 0
@@ -190,6 +229,7 @@ def build_event(
     delivered: int,
     ts: float,
     summary_chars: int,
+    payload_chars: int = 0,
     origin: str = "ws",
     error_code: Optional[str] = None,
     error_message: Optional[str] = None,
@@ -226,13 +266,14 @@ def build_event(
             event["summary"] = _WS_RE.sub(" ", declared).strip()[:summary_chars]
         else:
             event["summary"] = summarize_payload(payload, summary_chars)
+        # 完整正文：摘要只有 200 字，排查时不够用。
+        # 注意：这会把转发过的消息正文落到中继的库里，已与使用方确认。
+        if payload_chars:
+            event["message"] = payload_text(payload, payload_chars)
         # 仅供看板关联使用，不参与任何投递判定
         parent_msg_id = str(envelope.get("parent_msg_id") or "")
         if parent_msg_id:
             event["parent_msg_id"] = parent_msg_id
-        task_status = str(envelope.get("task_status") or "")
-        if task_status in ("in_progress", "success", "failed"):
-            event["task_status"] = task_status
     if etype == "probe_ack":
         state = payload.get("state") if isinstance(payload, dict) else None
         event["peer_state"] = str(state or "")
@@ -291,10 +332,6 @@ class Task:
     #: 多级转发的父任务。优先用协议直接给的 parent_msg_id；
     #: 没有才回落到 _infer_parent 的推断（老客户端 / agent 漏填）
     parent_task_id: str = ""
-    #: agent 上报的**业务**状态（in_progress / success / failed）。
-    #: 空 = 未上报（老客户端或宿主代回复）。与传输层 state 正交：
-    #: state 说“这条消息通没通”，task_status 说“整条任务链走完了没有”。
-    task_status: str = ""
     #: 对端**实际执行**的会话。走协作入口时 handler_session 是入口 ID（如
     #: desk-control），真实会话要等 response / probe_ack 回来才知道
     handler_session_real: str = ""
@@ -370,7 +407,6 @@ class Task:
             "ttl": self.ttl,
             "link_key": self.link_key,
             "parent_task_id": self.parent_task_id,
-            "task_status": self.task_status,
             "handler_session_real": self.handler_session_real,
             #: 走协作入口时入口 ID 与真实执行会话不一致，界面需要标出来
             "via_endpoint": bool(
@@ -423,7 +459,6 @@ class Task:
             "ttl": self.ttl,
             "link_key": self.link_key,
             "parent_task_id": self.parent_task_id,
-            "task_status": self.task_status,
             "handler_session_real": self.handler_session_real,
             "partial": 1 if self.partial else 0,
             "terminal": 1 if self.terminal else 0,
@@ -462,7 +497,6 @@ class Task:
         task.ttl = row.get("ttl")
         task.link_key = row.get("link_key") or ""
         task.parent_task_id = row.get("parent_task_id") or ""
-        task.task_status = row.get("task_status") or ""
         task.handler_session_real = row.get("handler_session_real") or ""
         task.partial = bool(row.get("partial"))
         chain = row.get("chain")
@@ -715,36 +749,14 @@ class TaskAggregator:
         协议给的 parent 优先于 _infer_parent 的推断 —— 那是 agent 亲口说的，
         而推断在异步场景下本身就不成立（B 异步派发后 run 就结束了，
         欠 A 的回复还挂着，此时 inbound 表里会同时存在多条）。
+
+        只消费 parent_msg_id：任务成败完全由传输层 state 表达（消息发出去、
+        对方返回了就算成功），agent 不再上报业务状态。
         """
         parent = str(event.get("parent_msg_id") or "")
         # 防自环：agent 万一把自己的 msg_id 填进来，会把递归 CTE 拖进死循环
         if parent and parent != task.task_id:
             task.parent_task_id = parent
-        status = str(event.get("task_status") or "")
-        if status in ("in_progress", "success", "failed"):
-            task.task_status = status
-
-    def _backfill_parent_status(self, task: Task, ts: float) -> None:
-        """把结果回推带来的业务结果回填给原任务。
-
-        两个维度各管各的，这里只动业务维度：
-          state（传输）    —— notify 投递成功即 notified，**立即终结**，不受这里影响；
-          task_status（业务）—— 异步任务发出时是 in_progress，任务链还在跑，
-                              直到对方回推结果才变成 success/failed。
-
-        回推自己也是一条独立消息，所以只做“把结论传给父亲”，不合并两条记录
-        （events 是真相，不丢数据）。
-        """
-        if task.task_status not in ("success", "failed"):
-            return
-        if not task.parent_task_id:
-            return
-        parent = self.tasks.get(task.parent_task_id)
-        if parent is None:
-            return
-        parent.task_status = task.task_status
-        # 任务链有新进展，刷新活跃时间，否则看板会误以为这条链早就没动静了
-        self._touch(parent, ts)
 
     def apply(self, event: dict[str, Any]) -> Optional[str]:
         """吃进一条事件，返回受影响的 task_id（无法归因则 None）。"""
@@ -801,8 +813,6 @@ class TaskAggregator:
 
         if etype == "notify":
             # 单向通知，协议上不会有回执，收下即终态。
-            # 注意：这说的是**这条消息**的传输状态。整条任务链是否走完是另一回事，
-            # 由 task_status 表达：异步任务发出时是 in_progress，直到对方回推结果。
             task = self.tasks.get(msg_id) or Task(task_id=msg_id, first_seen=ts)
             self.tasks[msg_id] = task
             self._evict()
@@ -825,8 +835,6 @@ class TaskAggregator:
                 self._finish(task, STATE_NOTIFIED, ts)
             self._ensure_link_key(task)
             self._infer_parent(task)
-            # 回推到达：把业务结果传给它指向的原任务
-            self._backfill_parent_status(task, ts)
             self._touch(task, ts)
             self._push(task, event)
             return task.task_id
@@ -853,11 +861,7 @@ class TaskAggregator:
                 task.bytes_in = int(event.get("bytes") or 0)
                 if not task.started_at:
                     task.started_at = task.delivered_at or task.first_seen
-                # 对方上报的业务结果：可能是 failed —— 消息通了但活儿没干成。
-                # 不写到 state 上：state 回答的是传输层，两个维度必须分开。
-                status = str(event.get("task_status") or "")
-                if status in ("in_progress", "success", "failed"):
-                    task.task_status = status
+                # 对方回了话，这条链路就算走通了
                 self._finish(task, STATE_DONE, ts)
             elif etype == "error":
                 self._finish(
@@ -951,6 +955,7 @@ class TraceStore:
         max_tasks: int = 5000,
         max_timeline: int = 60,
         summary_chars: int = 200,
+        payload_chars: int = 20000,
         store_probe_events: bool = True,
         hot_active_days: int = 30,
         hot_recent: int = 500,
@@ -963,6 +968,8 @@ class TraceStore:
         #: 0 = 永不删除（默认）。大于 0 时才会清理那么多天之前的历史
         self.prune_days = max(0, prune_days)
         self.summary_chars = max(0, summary_chars)
+        #: 消息完整正文上限；0 = 不存正文（回到只留摘要的旧行为）
+        self.payload_chars = max(0, payload_chars)
         #: probe / probe_ack 心跳是否逐条入 events 表（关掉可省大量行，
         #: 任务上的轮数统计与时间线区间仍然保留）
         self.store_probe_events = store_probe_events
@@ -1046,6 +1053,7 @@ class TraceStore:
                 delivered=delivered,
                 ts=ts or time.time(),
                 summary_chars=self.summary_chars,
+                payload_chars=self.payload_chars,
                 origin=origin,
                 error_code=error_code,
                 error_message=error_message,
@@ -1418,6 +1426,7 @@ class TraceStore:
                 "retention": "forever" if self.prune_days <= 0 else f"{self.prune_days}d",
                 "store_probe_events": self.store_probe_events,
                 "summary_chars": self.summary_chars,
+                "payload_chars": self.payload_chars,
                 "subscribers": len(self._subscribers),
                 "since": self.started_at,
             }
@@ -1449,5 +1458,6 @@ def build_store(settings: Any) -> TraceStore:
         max_tasks=int(getattr(settings, "trace_max_tasks", 5000)),
         max_timeline=int(getattr(settings, "trace_max_timeline", 60)),
         summary_chars=int(getattr(settings, "trace_summary_chars", 200)),
+        payload_chars=int(getattr(settings, "trace_payload_chars", 20000)),
         store_probe_events=bool(getattr(settings, "trace_store_probe_events", True)),
     )

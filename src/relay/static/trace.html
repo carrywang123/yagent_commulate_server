@@ -191,6 +191,50 @@
   .row .rail { position: absolute; left: 0; top: 12px; bottom: 12px; width: 3px;
     border-radius: 0 3px 3px 0; background: var(--c, var(--ink-5)); }
 
+  /* 任务视图：一条链路一张卡片。卡片边界就是任务边界 ——
+     让「哪些消息属于同一件事」一眼可见，而不是散在流水列表里靠小标认亲 */
+  .glist { padding: 8px 10px 40px; }
+  .gcard { background: var(--panel); border: 1px solid var(--line-2); border-radius: 12px;
+    margin-bottom: 14px; overflow: hidden; box-shadow: var(--sh-sm); }
+  .gcard.act { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-tint); }
+  .gh { display: flex; align-items: center; gap: 10px; padding: 9px 14px;
+    background: var(--ink-1, #f7f8fa); border-bottom: 1px solid var(--line-2);
+    border-left: 4px solid var(--c, var(--ink-5)); }
+  .gh .gn { font-size: 12px; font-weight: 600; color: var(--ink-60, #606a76);
+    background: var(--panel); border: 1px solid var(--line-2);
+    border-radius: 999px; padding: 1px 9px; white-space: nowrap; }
+  .gh .gsum { font-size: 13px; font-weight: 600; color: var(--ink-90, #1f2933);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 52%; }
+  .gh .gbadge.run { font-size: 11px; color: #1b6ef3; background: #eaf2ff;
+    border: 1px solid #c3dbff; border-radius: 999px; padding: 1px 8px; }
+  .gh { cursor: pointer; }
+  .gh:hover { background: #eef1f5; }
+  /* 默认折叠：只看到一行源头摘要，点头部展开 */
+  /* 参与通信的用户：紧跟摘要放在左边，靠右的话宽屏上跟摘要隔得太远，根本注意不到 */
+  .gh .gusers { flex: none; font-size: 11.5px; font-weight: 600; color: var(--ink-2, #3a4452);
+    background: var(--panel-2, #f2f4f6); border: 1px solid var(--line, #e3e6ea);
+    border-radius: 999px; padding: 1px 9px; white-space: nowrap; }
+  .gcard.fold .gbody { display: none; }
+  .gcaret { display: inline-block; font-size: 14px; color: var(--ink-40, #9aa4b0);
+    transition: transform .14s; transform: rotate(0deg); width: 10px; }
+  .gcaret.open { transform: rotate(90deg); }
+  .gh .gmap { font-size: 12px; color: var(--accent, #1b6ef3); background: var(--panel);
+    border: 1px solid var(--line-2); border-radius: 6px; padding: 2px 9px; cursor: pointer;
+    opacity: 0; transition: opacity .12s; }
+  .gh:hover .gmap, .gcard:not(.fold) .gh .gmap { opacity: 1; }
+  .gh .gmap:hover { border-color: var(--accent, #1b6ef3); background: var(--accent-tint, #eaf2ff); }
+  .gbody { padding: 6px 10px 8px; }
+  /* 缩进直接用后端算好的 depth，前端不再重建一遍树 */
+  .gr { position: relative; cursor: pointer; border-radius: 8px;
+    padding: 7px 10px 7px 14px; margin: 3px 0 3px calc(var(--d, 0) * 22px);
+    border: 1px solid transparent; transition: background .12s, border-color .12s; }
+  .gr:hover { background: var(--ink-1, #f7f8fa); border-color: var(--line-2); }
+  .gr.on { border-color: var(--accent); background: var(--accent-tint); }
+  .gr .grail { position: absolute; left: 0; top: 8px; bottom: 8px; width: 3px;
+    border-radius: 0 3px 3px 0; background: var(--c, var(--ink-5)); }
+  .gr .gtee, .gr .gdot { color: var(--ink-40, #9aa4b0); font-size: 11px; margin-right: 2px; }
+  .gr .gdot { color: var(--c, var(--ink-5)); }
+
   /* 调用链：按 parent_msg_id 串起来的任务树，缩进表示层级。
      回答的是「这次任务经过了谁」，与下方会话图的「这两个会话处得怎么样」互补 */
   .chain { margin: 0 0 14px; border: 1px solid var(--line-2); border-radius: 10px; overflow: hidden; }
@@ -281,6 +325,10 @@
     display: flex; gap: 12px; background: var(--panel-2); }
   .ph .grow { flex: 1; min-width: 0; }
   .ph .sub { margin-top: 8px; font-size: 11px; color: var(--ink-4); }
+  .ph .sub:empty { display: none; margin: 0; }
+  /* 标题 = 根任务摘要 + 参与用户 */
+  #d-title .dflow { margin-left: 12px; font-size: 12px; font-weight: 600;
+    color: var(--ink-3); white-space: nowrap; }
   .ph .sub em { font-style: normal; font-family: var(--mono); color: var(--ink-3); }
   .xbtn { flex: none; width: 28px; height: 28px; border-radius: 8px; cursor: pointer;
     background: var(--panel); border: 1px solid var(--line); color: var(--ink-3);
@@ -376,9 +424,9 @@
   </div>
   <div class="spacer"></div>
   <div class="ctrl">
-    <div class="seg" id="view-tabs" title="链路：把一对会话之间的多轮往返串成一条；任务：一条 request 一行">
+    <div class="seg" id="view-tabs" title="链路：一个任务就是一条链路 —— 发起方开的一件事，以及能顺 parent 溯源回它的全部转派与回推；消息：不分组，一条消息一行">
       <div class="sg on" data-view="links">链路</div>
-      <div class="sg" data-view="tasks">任务</div>
+      <div class="sg" data-view="tasks">消息</div>
     </div>
     <select id="days">
       <option value="1">今天</option>
@@ -461,7 +509,7 @@
 
   var S = {
     days: 0, from: '', to: '', user: '', role: 'all', state: 'all', q: '', userQ: '',
-    kpi: {}, users: [], tasks: [], links: [], edges: [], orphan: 0,
+    kpi: {}, users: [], tasks: [], links: [], edges: [], orphan: 0, groups: [], openChains: {},
     total: 0, limit: 500, offset: 0,
     view: 'links', selected: null, selectedLink: null,
     flash: {}, loading: false, dirty: false, retention: ''
@@ -485,17 +533,10 @@
     failed: { t: '有失败', v: 'r', run: false },
     done:   { t: '已完成', v: 'g', run: false }
   };
-  /* agent 上报的业务状态。与传输层 state 正交：
-     state 回答「消息通没通」，task_status 回答「这活儿干成了没有」。
-     必须交叉看 —— 对端执行失败但规规矩矩回了条「我失败了」，
-     传输层看到的是一次成功的 response，只看 state 会把它显示成「已完成」。 */
-  var BIZ = {
-    failed:      { t: '任务失败', v: 'r', run: false },
-    in_progress: { t: '等待回推', v: 'b', run: true  }
-  };
   var STATE_OPTS = {
-    links: [['all', '全部链路'], ['active', '进行中'], ['silent', '有静默段'],
-            ['failed', '有失败段'], ['done', '已全部完成']],
+    // 链路现在就是任务，筛选口径跟任务一致（命中链上任意节点即保留整条）
+    links: [['all', '全部链路'], ['active', '进行中'], ['silent', '已静默'],
+            ['done', '已完成'], ['failed', '失败'], ['notified', '单向通知']],
     tasks: [['all', '全部状态'], ['active', '进行中'], ['working', '处理中'], ['queued', '排队中'],
             ['silent', '已静默'], ['done', '已完成'], ['failed', '失败'],
             ['cancelled', '已撤回'], ['notified', '单向通知']]
@@ -523,15 +564,6 @@
   function full(ts) { return formatDate(ts, true); }
   function ago(ts) { return ts ? dur(Date.now() / 1000 - ts) + '前' : ''; }
   function sm(s) { return STATE[s] || { t: s || '未知', v: 'd', run: false }; }
-  /** 传输状态 × 业务状态 交叉后的最终展示。未上报业务状态时完全维持旧行为。 */
-  function sm2(t) {
-    var base = sm(t.state), biz = t.task_status || '';
-    if (!biz) return base;                    // 未上报：老客户端或宿主代回复
-    if (biz === 'failed') return BIZ.failed;  // 通了但没干成，这是最要紧的一类
-    // 传输层已终结但任务链还在跑：异步通知发出后等对方回推结果
-    if (biz === 'in_progress' && !base.run) return BIZ.in_progress;
-    return base;
-  }
   function lm(L) {
     if (L.active_turns) return LINK.active;
     if (L.failed_turns) return LINK.failed;
@@ -727,17 +759,13 @@
       return;
     }
     var html = S.tasks.map(function (t) {
-      var m = sm2(t);
+      var m = sm(t.state);
       var ws = t.requester && t.requester === t.handler;
       var bits = '';
       if (t.kind === 'notify' && t.state !== 'notified') bits += bit('b', '单向通知');
       if (t.silent) bits += bit('y', '已静默');
       if (t.error_code) bits += bit('r', t.error_code);
       if (t.via_endpoint) bits += bit('y', '经入口');
-      // 业务失败但消息本身是通的：把传输层结果保留成小标，避免看成“没送到”
-      if (t.task_status === 'failed' && (t.state === 'done' || t.state === 'notified')) {
-        bits += bit('d', sm(t.state).t);
-      }
       if (t.parent_task_id) bits += bit('p', '子任务');
 
       return '<div class="row' + (S.selected === t.task_id ? ' on' : '') + '" data-id="' +
@@ -763,12 +791,87 @@
   }
 
   function pager() {
-    if (S.total <= S.limit) return '';
+    if (S.total <= pageSize()) return '';
     return '<div class="pager">' +
       '<button id="pg-prev"' + (S.offset <= 0 ? ' disabled' : '') + '>上一页</button>' +
-      '<span>' + (S.offset + 1) + ' – ' + Math.min(S.offset + S.limit, S.total) + ' / ' + S.total + '</span>' +
-      '<button id="pg-next"' + (S.offset + S.limit >= S.total ? ' disabled' : '') + '>下一页</button>' +
+      '<span>' + (S.offset + 1) + ' – ' + Math.min(S.offset + pageSize(), S.total) + ' / ' + S.total +
+        (S.view === 'links' ? ' 条链路' : '') + '</span>' +
+      '<button id="pg-next"' + (S.offset + pageSize() >= S.total ? ' disabled' : '') + '>下一页</button>' +
       '</div>';
+  }
+  function pageSize() {
+    return S.view === 'links' ? (S.groupLimit || 20) : S.limit;
+  }
+
+  // ======================================================== 任务视图
+  /* 一个任务 = 一条链路 = 一个视图。发起方开的一件事算一个任务，
+     只要能顺 parent_msg_id 溯源回这条消息，就属于同一个视图。
+     发起方自己又开的新消息不算（见后端 _parent_is_real）。 */
+  function renderGroups() {
+    var box = $('task-body');
+    $('task-title').textContent = S.user
+      ? S.user + ' 参与的链路'
+      : '全部链路';
+    if (!S.groups.length) {
+      box.innerHTML = '<div class="empty"><div class="big">没有符合条件的链路</div>' +
+        '<div class="sm">换个用户、状态或时间范围试试。一条链路就是一个完整任务</div></div>';
+      return;
+    }
+    var html = S.groups.map(function (g) {
+      var root = g.nodes[0] || {};
+      var rm = sm(root.state);
+      var open = S.openChains[g.root_id] === true;   // 默认折叠
+      // 折叠状态下也要一眼看出是谁在通信，不用展开去找。
+      // 同一个人的多个会话算一个人，会话粒度在展开行和拓扑图里看。
+      var users = [];
+      g.nodes.forEach(function (n) {
+        [n.requester, n.handler].forEach(function (u) {
+          if (u && users.indexOf(u) < 0) users.push(u);
+        });
+      });
+      var utext = users.length > 5
+        ? users.slice(0, 5).join('、') + ' 等5人（共' + users.length + '人）'
+        : users.join('、');
+      var head = '<div class="gh" data-chain-toggle="' + esc(g.root_id) + '">' +
+        '<span class="gcaret' + (open ? ' open' : '') + '">›</span>' +
+        '<span class="gn">' + (g.size > 1 ? g.size + ' 个环节' : '单次消息') + '</span>' +
+        '<span class="gsum">' + (esc(root.summary) || '<span class="none">（无正文摘要）</span>') + '</span>' +
+        (utext ? '<span class="gusers">' + esc(utext) + '</span>' : '') +
+        '<span class="grow"></span>' +
+        (g.active ? '<span class="gbadge run">进行中</span>' : '') +
+        pill(rm) +
+        '<button class="gmap" data-chain-root="' + esc(g.root_id) + '">链路图</button>' +
+        '<span class="met">' + esc(hhmm(g.created_at)) + '</span>' +
+      '</div>';
+      var rows = g.nodes.map(function (n) {
+        var m = sm(n.state);
+        var ws = n.requester && n.requester === n.handler;
+        var bits = '';
+        if (n.silent) bits += bit('y', '已静默');
+        if (n.error_code) bits += bit('r', n.error_code);
+        if (n.via_endpoint) bits += bit('y', '经入口');
+        return '<div class="gr' + (S.selected === n.task_id ? ' on' : '') +
+            '" data-id="' + esc(n.task_id) + '" style="--c:' +
+            (VCOLOR[m.v] || VCOLOR.d)[1] + ';--d:' + (n.depth || 0) + '">' +
+          '<span class="grail"></span>' +
+          '<div class="l1">' +
+            (n.depth ? '<span class="gtee">└</span>' : '<span class="gdot">●</span>') +
+            who(n.requester, n.requester_session, 'a', ws) +
+            '<span class="dir">→</span>' +
+            who(n.handler, n.handler_session_real || n.handler_session, 'b', ws) +
+            '<span class="grow"></span>' +
+            (bits ? '<span class="bits">' + bits + '</span>' : '') +
+            pill(m) +
+            '<span class="met">' + esc(timingText(n)) + '</span>' +
+          '</div>' +
+          '<div class="l2"><span class="sum grow' + (n.kind === 'notify' ? '' : ' hi') + '">' +
+            (esc(n.summary) || '<span class="none">（无正文摘要）</span>') + '</span></div>' +
+        '</div>';
+      }).join('');
+      return '<div class="gcard' + (g.active ? ' act' : '') + (open ? '' : ' fold') + '" style="--c:' +
+        (VCOLOR[rm.v] || VCOLOR.d)[1] + '">' + head + '<div class="gbody">' + rows + '</div></div>';
+    }).join('');
+    box.innerHTML = '<div class="glist">' + html + '</div>' + pager();
   }
 
   function timingText(n) {
@@ -809,7 +912,7 @@
     });
     var out = [];
     function walk(n, depth) {
-      var m = sm2(n), c = VCOLOR[m.v] || VCOLOR.d;
+      var m = sm(n.state), c = VCOLOR[m.v] || VCOLOR.d;
       out.push('<div class="crow' + (n.task_id === currentId ? ' cur' : '') +
           '" data-chain="' + esc(n.task_id) + '" style="--c:' + c[1] + ';--d:' + depth + '">' +
         '<span class="cw">' + esc(n.requester || '?') + '<span class="dir">→</span>' +
@@ -851,11 +954,51 @@
     S.selected = null; S.selectedLink = null;
     $('drawer').classList.remove('open', 'explorer-open');
     $('backdrop').classList.remove('on');
-    if (S.view === 'links') renderLinks(); else renderTasks();
+    if (S.view === 'links') renderGroups();
+    else renderTasks();
+  }
+  /** 打开一条链路（= 一个任务）的图。
+   *
+   *  图里只放这个任务自己的节点 —— 用 fixedBranch 让 explorer 跳过按会话扩散的
+   *  那套裁剪，否则会把同一对会话在别的任务里的通信也拉进来，
+   *  那就又回到了「谁和谁通过信」而不是「这件事怎么跑的」。 */
+  function openChain(rootId, focusId) {
+    var g = null;
+    for (var i = 0; i < S.groups.length; i++) {
+      if (S.groups[i].root_id === rootId) { g = S.groups[i]; break; }
+    }
+    if (!g) return;
+    S.selected = focusId || rootId; S.selectedLink = null;
+    renderGroups();
+    open();
+    var root = g.nodes[0] || {};
+    // 标题就是「这件事 + 有谁参与」，不再分主副两行。
+    // 不画箭头：分叉链路本来是树，强行拉成一条线会变成
+    // qirui → qirui2 → qirui → qirui2，看着像在兜圈子，实际并没有。
+    var users = [];
+    g.nodes.forEach(function (n) {
+      [n.requester, n.handler].forEach(function (u) {
+        if (u && users.indexOf(u) < 0) users.push(u);
+      });
+    });
+    var usersText = users.length > 5
+      ? users.slice(0, 5).join('、') + ' 等 ' + users.length + ' 人'
+      : users.join('、');
+    $('d-title').innerHTML = '<span class="dsum">' + (esc(root.summary) || esc(rootId)) + '</span>' +
+      (usersText ? '<span class="dflow">' + esc(usersText) + '</span>' : '');
+    $('d-id').textContent = '';
+    if (window.TraceSessionExplorer) {
+      window.TraceSessionExplorer.mount($('d-body'), {nodes: g.nodes}, {
+        taskId: focusId || rootId,
+        fixedBranch: true,
+        viewerClient: S.user
+      });
+    }
   }
   function openTask(id) {
     S.selected = id; S.selectedLink = null;
     if (S.view === 'tasks') renderTasks();
+    else renderGroups();
     open();
     api('/api/trace/tasks/' + encodeURIComponent(id)).then(function (d) {
       if (S.selected === id) taskDetail(d.task);
@@ -915,6 +1058,23 @@
       renderTasks();
     });
   }
+  function loadGroups() {
+    // 分页单位是「组」而不是「条」：一组展开可能十几行，沿用 500 会把页面撞爆，
+    // 所以这里不用 query() 里的 S.limit，单独算一个小很多的值。
+    var lim = Math.max(1, Math.min(200, Math.round(S.limit / 25) || 20));
+    var qs = '?limit=' + lim + '&offset=' + S.offset + rangeParams() +
+      '&role=' + S.role + '&state=' + encodeURIComponent(S.state) +
+      '&user=' + encodeURIComponent(S.user) + '&q=' + encodeURIComponent(S.q);
+    S.groupLimit = lim;
+    return api('/api/trace/task-groups' + qs).then(function (d) {
+      S.groups = d.groups || []; S.total = d.total || 0;
+      // 链路就是任务，顶部两个链路指标改由这个接口填
+      $('k-links').textContent = d.total;
+      $('k-links').className = 'v';
+      $('k-links-active').textContent = d.active_total != null ? d.active_total : '—';
+      renderGroups();
+    });
+  }
   async function allLinks(params) {
     var links=[],first=null,offset=0;
     while(true){
@@ -954,7 +1114,11 @@
     $('k-links').textContent=d.total;$('k-links').className='v';
     $('k-links-active').textContent=d.active_total!=null?d.active_total:'—';renderLinks();
   }
-  function loadList() { return S.view === 'links' ? loadLinks() : loadTasks(); }
+  function loadList() {
+    // 链路 = 任务：走按 parent 溯源分组的接口，不再用按会话对聚合的旧口径
+    if (S.view === 'links') return loadGroups();
+    return loadTasks();
+  }
   function reload() {
     if (S.loading) { S.dirty = true; return; }
     S.loading = true;
@@ -1056,13 +1220,37 @@
   });
   $('task-body').addEventListener('toggle',function(e){if(e.target.matches('details[data-group]'))groupOpen.set(e.target.dataset.group,e.target.open);},true);
   $('task-body').addEventListener('click', function (e) {
-    if (e.target.id === 'pg-prev') { S.offset = Math.max(0, S.offset - S.limit); loadList(); return; }
-    if (e.target.id === 'pg-next') { S.offset += S.limit; loadList(); return; }
+    if (e.target.id === 'pg-prev') { S.offset = Math.max(0, S.offset - pageSize()); loadList(); return; }
+    if (e.target.id === 'pg-next') { S.offset += pageSize(); loadList(); return; }
     var lk = e.target.closest('[data-link]');
+    var chainMap = e.target.closest('[data-chain-root]');
+    if (chainMap) { openChain(chainMap.getAttribute('data-chain-root')); return; }
+    var tog = e.target.closest('[data-chain-toggle]');
+    if (tog) {
+      var rid = tog.getAttribute('data-chain-toggle');
+      S.openChains[rid] = !S.openChains[rid];
+      renderGroups();
+      return;
+    }
     var branch=e.target.closest('[data-open-branch]');if(branch){openBranch(branch.dataset.openBranch);return;}
     if (lk) { var group=lk.closest('[data-group]');if(group)openBranch(group.dataset.group,lk.dataset.link);else openLink(lk.dataset.link);return; }
     var tk = e.target.closest('[data-id]');
-    if (tk) openTask(tk.getAttribute('data-id'));
+    if (tk) {
+      var id = tk.getAttribute('data-id');
+      // 链路视图里点具体环节，也该看到「这件事怎么跑的」——
+      // 走 openTask 会拉出按会话扩散的全量图，把别的任务的通信也混进来。
+      if (S.view === 'links') {
+        var owner = null;
+        for (var gi = 0; gi < S.groups.length; gi++) {
+          for (var ni = 0; ni < S.groups[gi].nodes.length; ni++) {
+            if (S.groups[gi].nodes[ni].task_id === id) { owner = S.groups[gi].root_id; break; }
+          }
+          if (owner) break;
+        }
+        if (owner) { openChain(owner, id); return; }
+      }
+      openTask(id);
+    }
   });
   $('d-close').addEventListener('click', close);
   // 调用链行点击：在同一个抽屉里跳到另一个任务，不关闭抽屉

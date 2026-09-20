@@ -63,8 +63,11 @@ class Settings(BaseSettings):
     trace_max_tasks: int = 5000
     #: 单个任务时间线最多保留多少条（probe 已折叠，一般远达不到）
     trace_max_timeline: int = 60
-    #: payload 摘要长度。只留摘要，不留全文
+    #: payload 摘要长度。列表/连线上展示的就是它
     trace_summary_chars: int = 200
+    #: 落库的消息**完整正文**上限（字符）。0 = 不存正文，只留摘要。
+    #: 注意：非 0 意味着转发过的消息正文会持久化在本机库里。
+    trace_payload_chars: int = 20000
     #: probe 心跳是否逐条入 events 表（关掉可大幅减小数据库，
     #: 任务上的对账轮数与时间线区间仍保留）
     trace_store_probe_events: bool = True

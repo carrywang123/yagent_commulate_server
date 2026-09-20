@@ -9,6 +9,7 @@
 | GET | /api/trace/links | **链路列表**：按会话对聚合的多轮往返 |
 | GET | /api/trace/links/{link_key} | 单条链路的完整回合时间轴 |
 | GET | /api/trace/tasks | 任务列表，按用户 / 角色 / 状态 / 关键词 / 时间段过滤，可分页 |
+| GET | /api/trace/task-groups | **任务组**：用 parent 溯源到源头，一条调用链一组，按组分页 |
 | GET | /api/trace/tasks/{task_id} | 单任务时间线 |
 | GET | /api/trace/tasks/{task_id}/events | 该任务的原始事件明细（含每一轮 probe）|
 | GET | /api/trace/stream | SSE 实时推送（任务变更） |
@@ -198,6 +199,180 @@ async def list_tasks(
         "until": until,
         "tasks": [task.brief(now) for task in tasks],
     }
+
+
+#: 建树时一次性拉取的任务上限。溯源在内存里做，不走递归 SQL：
+#: 数据量在万级以内时这比递归 CTE 快也好懂；超过上限则截断并在响应里给出 truncated 标志。
+_GROUP_SCAN_CAP = 5000
+
+
+def _parent_is_real(row: Any, parent_row: Any) -> bool:
+    """判定一个 parent_msg_id 是不是真的成立。
+
+    parent_msg_id 的语义是「我正在处理的那条入站消息」，所以父任务的
+    **接收方**必须就是当前这条消息的**发起方** —— B 收了 A 的活再转派给 C，
+    这才叫子环节。
+
+    发起方在自己发出的两条消息之间填 parent（A 发了任务1，又发一条指向它的
+    消息）属于对这个字段的误用：那是 A 又开了一件新事，应当独立成链，
+    而不是挂到前一条下面。
+
+    信息不全时（老客户端没上报会话）一律放行，宁可少断不可误断。
+    """
+    parent_handler = str(
+        getattr(parent_row, "handler_session_real", "")
+        or getattr(parent_row, "handler_session", "") or ""
+    )
+    requester = str(getattr(row, "requester_session", "") or "")
+    if not parent_handler or not requester:
+        return True
+    return parent_handler == requester
+
+
+def _resolve_root(task_id: str, index: dict[str, Any]) -> str:
+    """沿 parent_task_id 一路向上，找到这条消息所属链路的源头。
+
+    停止条件：没有 parent（真正的源头）、parent 不在本次结果集（跨时间窗或
+    已被淘汰）、parent 不成立（见 _parent_is_real）、以及环路。
+
+    环路保护不是多余的：parent_msg_id 由 agent 填，填成互相指向或指向自己
+    都有可能，没有 seen 集合这里会直接死循环。
+    """
+    cur = task_id
+    seen: set[str] = set()
+    while cur not in seen:
+        seen.add(cur)
+        row = index.get(cur)
+        if row is None:
+            break
+        parent = str(row.parent_task_id or "")
+        if not parent or parent not in index:
+            break
+        if not _parent_is_real(row, index[parent]):
+            break
+        cur = parent
+    return cur
+
+
+@trace_router.get("/task-groups", summary="任务组（用 parent 溯源到源头，一条调用链一组）")
+async def list_task_groups(
+    request: Request,
+    user: str = Query("", description="按用户名过滤（client_id）"),
+    role: str = Query("all", pattern="^(all|sent|handled)$"),
+    state: str = Query("all", description="all/active/done/failed/cancelled/notified/silent"),
+    q: str = Query("", description="关键词：摘要 / task_id / conv_id / 会话ID"),
+    days: Optional[int] = Query(None, ge=0, le=3650),
+    from_: Optional[str] = Query(None, alias="from"),
+    to: Optional[str] = Query(None),
+    limit: int = Query(20, ge=1, le=200, description="返回多少**组**（不是多少条）"),
+    offset: int = Query(0, ge=0),
+) -> dict[str, Any]:
+    """把任务按【源头】归并，一条调用链返回一组。
+
+    分页单位是「组」而不是「条」，所以一条链不会被翻页切断。
+
+    筛选条件的语义是「命中链上任意一个节点，整条链就保留」：
+    只显示命中的那几个节点会把调用链拆碎，失去分组的意义。
+    """
+    _guard(request)
+    store = _store(request)
+    now = time.time()
+    since, until = _range(store, days, from_, to)
+
+    # 先把时间窗内的任务全拿出来建索引。不能只拿筛选命中的：
+    # 溯源要靠 parent 链，父节点被筛掉就找不到源头了。
+    _, all_rows = await asyncio.to_thread(
+        store.query_tasks,
+        since=since, until=until, user="", role="all",
+        state="all", keyword="", limit=_GROUP_SCAN_CAP, offset=0,
+    )
+    truncated = len(all_rows) >= _GROUP_SCAN_CAP
+
+    # 再取一次筛选结果，用来决定哪些组该出现
+    if user or role != "all" or state != "all" or q:
+        _, hit_rows = await asyncio.to_thread(
+            store.query_tasks,
+            since=since, until=until, user=user, role=role,
+            state=state, keyword=q, limit=_GROUP_SCAN_CAP, offset=0,
+        )
+    else:
+        hit_rows = all_rows
+
+    index = {t.task_id: t for t in all_rows}
+
+    # 按源头归组：组里装整条链，而不只是命中的节点
+    members: dict[str, list[Any]] = {}
+    for row in all_rows:
+        members.setdefault(_resolve_root(row.task_id, index), []).append(row)
+
+    keep = {_resolve_root(r.task_id, index) for r in hit_rows}
+
+    groups = []
+    for root_id in keep:
+        nodes = members.get(root_id) or []
+        if not nodes:
+            continue
+        root = index.get(root_id) or nodes[0]
+        # 未终结的排前面，其余按链上最后一次动静倒序，跟任务列表口径一致
+        groups.append({
+            "root_id": root_id,
+            "active": any(not n.terminal for n in nodes),
+            "last_activity": max(float(n.last_activity or 0) for n in nodes),
+            "created_at": float(root.created_at or root.first_seen or 0),
+            "size": len(nodes),
+            "nodes": nodes,
+        })
+
+    groups.sort(key=lambda g: (0 if g["active"] else 1, -g["last_activity"]))
+    total = len(groups)
+    active_total = sum(1 for g in groups if g["active"])
+    page = groups[offset:offset + limit]
+
+    return {
+        "ts": now,
+        "total": total,
+        "active_total": active_total,
+        "offset": offset,
+        "limit": limit,
+        "since": since,
+        "until": until,
+        "truncated": truncated,
+        "groups": [
+            {
+                "root_id": g["root_id"],
+                "active": g["active"],
+                "size": g["size"],
+                "last_activity": g["last_activity"],
+                "created_at": g["created_at"],
+                "nodes": [
+                    dict(n.brief(now), depth=_depth_of(n.task_id, index))
+                    for n in sorted(
+                        g["nodes"],
+                        key=lambda n: (float(n.created_at or n.first_seen or 0), n.task_id),
+                    )
+                ],
+            }
+            for g in page
+        ],
+    }
+
+
+def _depth_of(task_id: str, index: dict[str, Any]) -> int:
+    """距离源头几层，前端直接拿它做缩进。口径必须跟 _resolve_root 一致。"""
+    depth, cur, seen = 0, task_id, set()
+    while cur not in seen:
+        seen.add(cur)
+        row = index.get(cur)
+        if row is None:
+            break
+        parent = str(row.parent_task_id or "")
+        if not parent or parent not in index:
+            break
+        if not _parent_is_real(row, index[parent]):
+            break
+        depth += 1
+        cur = parent
+    return depth
 
 
 @trace_router.get("/links", summary="链路列表（按会话对聚合的多轮往返）")

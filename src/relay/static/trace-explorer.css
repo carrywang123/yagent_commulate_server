@@ -14,6 +14,10 @@
 .tx-layout { display:grid; grid-template-columns:minmax(0,1fr) 350px; flex:1; min-height:0; }
 .tx-map { min-width:0; min-height:0; display:flex; flex-direction:column; background:#f8f8f5; }
 .tx-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:7px; padding:10px 16px; font-size:12px; border-bottom:1px solid #e6e6df; }
+/* 区域名：让「拓扑图」「消息明细」在界面上有名字，沟通时能指同一个东西 */
+.tx-panel-name { font-size:12px; font-weight:700; color:#3a4452; letter-spacing:.5px;
+  padding:2px 9px; background:#eceee8; border:1px solid #dcdfd6; border-radius:999px; }
+.tx-panel-name.inspector { display:inline-block; margin:0 0 12px; background:#eef1f7; border-color:#dbe1ea; }
 .tx-legend { margin-left:auto; color:#73756e; font-size:11px; }
 .tx-stage { flex:1; overflow:auto; min-height:220px; background-image:radial-gradient(#dcded5 1px,transparent 1px); background-size:18px 18px; }
 .tx-svg { display:block; min-height:320px; }
@@ -60,11 +64,13 @@
 .tx-edge-control { cursor:pointer; }
 .tx-direction-chip rect { fill:#fff; stroke:#b9c8b0; stroke-width:1.5; filter:drop-shadow(0 2px 3px #25381c16); }
 .tx-direction-chip circle { fill:#edf2e9; }
-.tx-direction-chip text { fill:#4a613e; font-size:13px; font-weight:700; pointer-events:none; }
+/* 只管单行标签的默认文字；多行卡片里的行自己定颜色，不该被这条盖掉 */
+.tx-direction-chip>text { fill:#4a613e; font-size:13px; font-weight:700; pointer-events:none; }
+.tx-direction-chip text { pointer-events:none; }
 .tx-direction-chip .tx-direction-arrow { fill:none; stroke:#65874e; stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; pointer-events:none; }
 .tx-direction-chip.reverse circle { fill:#eaf0f6; }
 .tx-direction-chip.reverse .tx-direction-arrow { stroke:#557da1; }
-.tx-direction-chip.reverse text { fill:#456989; }
+.tx-direction-chip.reverse>text { fill:#456989; }
 .tx-direction-chip.reverse rect { stroke:#b8cbdc; }
 .tx-direction-chip:hover rect,.tx-direction-chip.on rect { fill:#fff5ed; stroke:#c96442; stroke-width:2; }
 .tx-direction-chip:focus-visible { outline:none; }
@@ -83,6 +89,84 @@
 .tx-message-heading { display:flex; justify-content:space-between; align-items:center; margin:18px 0 12px; }
 .tx-message-heading strong { font-size:14px; color:#3c4834; }
 .tx-message-heading>span { padding:2px 7px; border-radius:12px; background:#f0f3e9; color:#6a7959; font-size:11px; }
+/* 跨端消息：缩进树形行，结构与列表页 .gr 同构。
+   旧的卡片样式（.tx-message-card）已不再使用，保留以免其他地方还引用。 */
+.tx-msg-tree { display:block; }
+.tx button.tx-mrow { position:relative; display:block; width:100%; text-align:left;
+  background:none; border:1px solid transparent; border-radius:8px; cursor:pointer;
+  padding:7px 10px 7px 14px; margin:3px 0 3px calc(var(--d,0) * 20px);
+  color:#414e36; box-shadow:none; transition:background .12s, border-color .12s; }
+.tx button.tx-mrow:hover { background:#f6f8f2; border-color:#dfe5d7; }
+.tx button.tx-mrow.on { background:#fffaf4; border-color:#ca9473; }
+.tx button.tx-mrow.bad { background:#fdf6f5; }
+.tx button.tx-mrow.bad:hover { background:#fbeeec; }
+.tx .tx-mrail { position:absolute; left:0; top:7px; bottom:7px; width:3px;
+  border-radius:0 3px 3px 0; background:var(--rc,#a0aec0); }
+.tx .tx-ml1 { display:flex; align-items:center; gap:5px; font-size:13px; line-height:1.5;
+  flex-wrap:nowrap; min-width:0; }
+.tx .tx-ml1 b { flex:0 1 auto; min-width:0; overflow:hidden;
+  text-overflow:ellipsis; white-space:nowrap; }
+.tx .tx-ml1 b { font-weight:700; color:#2f3a24; }
+.tx .tx-ml1 small { flex:none; font-family:var(--tx-mono,ui-monospace,monospace);
+  font-size:10px; color:#8a9678; white-space:nowrap; }
+.tx .tx-mtee, .tx .tx-mdot { font-size:11px; color:#9aa48c; }
+.tx .tx-mdot { color:var(--rc,#a0aec0); }
+.tx .tx-mdir { color:#9aa48c; }
+.tx .tx-mgrow { flex:1; min-width:6px; }
+.tx .tx-mstate { flex:none; font-size:10.5px; padding:1px 7px; border-radius:999px;
+  border:1px solid #dfe5d7; background:#fff; color:#5c6b4a; white-space:nowrap; }
+.tx .tx-mstate.notify { color:#2b6cb0; border-color:#c3d9ee; background:#f4f9fd; }
+.tx .tx-mstate.bad { color:#b03a2e; border-color:#e7c3bd; background:#fdf4f2; }
+.tx .tx-mtag { flex:none; font-size:10px; padding:1px 6px; border-radius:999px;
+  background:#f0efe4; color:#7a7550; white-space:nowrap; }
+.tx .tx-ml1 time { flex:none; font-size:10.5px; color:#8a9678;
+  font-family:var(--tx-mono,ui-monospace,monospace); }
+.tx .tx-ml2 { display:block; margin-top:2px; padding-left:17px; font-size:12.5px;
+  color:#4b5842; overflow-wrap:anywhere; }
+.tx .tx-ml3 { display:flex; flex-wrap:wrap; gap:5px; margin-top:4px; padding-left:17px; }
+.tx .tx-ml2 i { color:#9aa48c; font-style:normal; }
+.tx .tx-merr { display:block; margin-top:2px; font-size:11.5px; color:#b03a2e; }
+
+/* 折叠块：技术字段和原始 JSON 默认收起，需要时再展开。
+   日常看的是「谁发给谁、说了什么」，不是一堆 uuid。 */
+.tx details.tx-fold { margin:10px 0 0; border:1px solid #dfe5d7; border-radius:10px;
+  background:#fbfcf8; overflow:hidden; }
+.tx details.tx-fold>summary { list-style:none; cursor:pointer; user-select:none;
+  display:flex; align-items:center; gap:8px; padding:8px 12px;
+  font-size:12.5px; font-weight:600; color:#5c6b4a; }
+.tx details.tx-fold>summary::-webkit-details-marker { display:none; }
+.tx details.tx-fold>summary::before { content:'›'; display:inline-block; width:10px;
+  font-size:14px; color:#9aa48c; transition:transform .15s; }
+.tx details.tx-fold[open]>summary::before { transform:rotate(90deg); }
+.tx details.tx-fold>summary:hover { background:#f2f5ec; }
+.tx .tx-fold-hint { margin-left:auto; font-weight:400; font-size:11px; color:#96a086;
+  font-family:var(--tx-mono,ui-monospace,monospace); }
+.tx details.tx-fold .tx-info { margin:0; padding:2px 12px 10px; }
+.tx details.tx-fold.json { margin:8px 0 0; background:#fff; }
+.tx details.tx-fold.json .tx-raw-json { margin:0; border-radius:0 0 9px 9px; }
+
+/* 类型 / 状态标签：一眼分辨，不再埋在字段表里 */
+.tx .tx-tag { display:inline-flex; align-items:center; padding:2px 9px; border-radius:999px;
+  font-size:11.5px; font-weight:600; border:1px solid transparent; white-space:nowrap; }
+.tx .tx-tag.kind.req { background:#eef2fb; color:#3a5a9b; border-color:#cdd9ef; }
+.tx .tx-tag.kind.notify { background:#f4f9fd; color:#2b6cb0; border-color:#c3d9ee; }
+.tx .tx-tag.sub { background:#f5f1fb; color:#6b4fa3; border-color:#ddd2f0; }
+.tx .tx-tag.st.ok { background:#eef6ee; color:#2f6b43; border-color:#cfe4d4; }
+.tx .tx-tag.st.bad { background:#fdf0ee; color:#a8342a; border-color:#eecac4; }
+.tx .tx-tag.st.warn { background:#fdf7e8; color:#8a6516; border-color:#ecdcb4; }
+.tx .tx-tag.st.info { background:#eef5fc; color:#2b6cb0; border-color:#cbdef2; }
+.tx .tx-tag.st.busy { background:#f4f0fb; color:#5f4699; border-color:#ddd3f2; }
+.tx .tx-tag.st.idle { background:#f2f3f0; color:#5f6a55; border-color:#dde1d8; }
+
+/* 原始记录单条的头部 */
+.tx .tx-frame-head { display:flex; align-items:baseline; gap:8px; }
+.tx .tx-frame-head b { font-size:13px; color:#3c4834; }
+.tx .tx-frame-head time { margin-left:auto; font-size:11px; color:#8a9678;
+  font-family:var(--tx-mono,ui-monospace,monospace); }
+.tx .tx-frame-sub { margin-top:2px; font-size:11.5px; color:#7c8a6e; }
+.tx .tx-frame-text { margin-top:5px; font-size:12.5px; color:#4b5842;
+  overflow-wrap:anywhere; white-space:pre-wrap; }
+
 .tx-message-grid { display:grid; gap:10px; }
 .tx button.tx-message-card { display:block; width:100%; padding:13px; background:#fff; border:1px solid #dfe5d7; border-radius:12px; text-align:left; color:#414e36; box-shadow:0 2px 6px #25351b07; transition:border-color .12s,box-shadow .12s,background .12s; }
 .tx button.tx-message-card:hover { border-color:#b3c29d; box-shadow:0 3px 12px #30431f12; background:#fcfdf9; }
@@ -105,6 +189,38 @@
 .tx-svg .tx-person.is-viewer rect { stroke:#6961ac; stroke-width:3; stroke-dasharray:5 3; }
 .tx-shared-note { display:block; padding:6px 8px; margin:6px 0; background:#edf0fa; color:#555889; font-size:11px; border-radius:5px; }
 .tx-svg .tx-shared-label { fill:#555889; font-size:10px; paint-order:stroke; stroke:#f8f8f5; stroke-width:3; }
+/* 连线上的摘要：描白边才能在网格背景和连线上看清 */
+.tx-svg .tx-brief-label { fill:#3a4452; font-size:11px; font-weight:600; paint-order:stroke; stroke:#f8f8f5; stroke-width:3.5; }
+/* 边标签内的文字：在卡片背景上，不再需要描白边 */
+.tx-svg .tx-chip-head { fill:#6b7280; font-size:10px; font-weight:600; }
+.tx-svg .tx-chip-line { fill:#2f3742; font-size:11.5px; font-weight:600; }
+.tx-svg .tx-chip-line.solo { font-size:12px; }
+.tx-svg .tx-chip-more { fill:#8a94a2; font-size:10.5px; }
+.tx-svg .tx-brief-idx { fill:#9aa3ad; font-weight:500; }
+/* 标签被垂直挪开时，拉回连线的引导线 */
+.tx-svg .tx-lead { stroke:#b9bdb2; stroke-width:1.2; stroke-dasharray:3 3; fill:none; }
+/* 字段直接摊开，不再藏在折叠里 */
+/* 完整正文：摘要看一眼，正文用来排查，所以直接摊开不折叠 */
+.tx-body-block { margin:12px 0 0; }
+.tx-body-label { font-size:11px; font-weight:700; color:#6b7280; margin:10px 0 5px; letter-spacing:.4px; }
+.tx-body-label.reply { color:#456989; }
+.tx-body-text { white-space:pre-wrap; overflow-wrap:anywhere; padding:11px 12px;
+  background:#fbfbf9; border:1px solid #e6e6df; border-left:3px solid #b9c8b0; border-radius:6px;
+  font-size:12.5px; line-height:1.85; color:#2f3742; max-height:360px; overflow:auto; }
+.tx-body-text.reply { border-left-color:#b8cbdc; background:#fafbfc; }
+.tx-body-text.loading,.tx-body-text.empty { color:#8a94a2; font-size:12px; border-left-color:#dcdfd6; }
+/* 标题里的参与用户，要比旁边的统计数字更显眼 */
+.tx-title .tx-clients { font-weight:700; color:#2f3742; background:#eceee8;
+  border:1px solid #dcdfd6; border-radius:999px; padding:1px 10px; margin-right:2px; }
+.tx-info.open { display:grid; gap:6px; margin:12px 0 0; padding:12px; background:#f7f8fa;
+  border:1px solid #e8eaee; border-radius:8px; font-size:12px; }
+.tx-info.open>div { display:grid; grid-template-columns:76px minmax(0,1fr); gap:10px; align-items:baseline; }
+.tx-info.open span { color:#8a94a2; }
+.tx-info.open code { font-family:ui-monospace,Menlo,Consolas,monospace; font-size:11.5px;
+  color:#2f3742; overflow-wrap:anywhere; }
+.tx-raw-events.open { margin-top:18px; }
+.tx-raw-json { white-space:pre-wrap; overflow-wrap:anywhere; margin:8px 0 0; padding:10px;
+  background:#f7f8fa; border:1px solid #e8eaee; border-radius:6px; font-size:11px; line-height:1.6; color:#3a4452; }
 .trace-group>summary strong { overflow-wrap:anywhere; }
 .trace-group>[data-open-branch] { margin:0 16px 10px; padding:8px 12px; border:1px solid #b7c5a9; border-radius:6px; background:white; cursor:pointer; }
 .tx-viewpoint { margin-top:10px; font-size:12px; color:#68765f; }
@@ -123,7 +239,7 @@
 .group-failed { color:#b62e35; font-size:12px; }
 .tx-svg .tx-route.has-failure .tx-line,.tx-svg .tx-route.has-failure.on .tx-line { stroke:#c03535; stroke-width:3; stroke-dasharray:8 4; }
 .tx-svg .tx-direction-chip.has-failure rect { fill:#fff0f0; stroke:#c03535; stroke-width:2; }
-.tx-svg .tx-direction-chip.has-failure text { fill:#b2242d; }
+.tx-svg .tx-direction-chip.has-failure>text { fill:#b2242d; }
 .tx-svg .tx-direction-chip.has-failure .tx-direction-arrow { stroke:#c03535; }
 .tx-failure-detail { padding:12px; margin-top:12px; border:1px solid #df969b; border-left:4px solid #c03535; border-radius:8px; background:#fff2f2; color:#a1262d; font-size:12px; line-height:1.9; overflow-wrap:anywhere; }
 .tx-failure-detail strong { display:block; font-size:15px; }

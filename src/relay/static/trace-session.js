@@ -19,6 +19,18 @@ window.TraceDate=function(value,seconds=true){
 const date=window.TraceDate;
 const failed=t=>t.state==='failed';
 const reason=t=>t.error_message||t.error_code||'未记录失败原因';
+// 行首竖线颜色，与列表页 VCOLOR 同一套，保证两处看着是一个东西
+// 树形行里只给时分秒：右侧面板宽度有限，完整日期会把整行挤爆，
+// 需要完整时间的话下面「创建时间」字段里有。
+const hms=ts=>{const d=new Date((Number(ts)||0)*1000);
+  return isNaN(d.getTime())?'':String(d.getHours()).padStart(2,'0')+':'+
+    String(d.getMinutes()).padStart(2,'0');};
+// 标签配色：失败红、取消黄、通知蓝、完成绿
+const stateTone=t=>({failed:'bad',cancelled:'warn',done:'ok',
+  notified:'info',sent:'info',delivered:'info',working:'busy',queued:'idle'}[t.state]||'idle');
+const railColor=t=>({failed:'#d64545',cancelled:'#d69e2e',done:'#2f855a',
+  notified:'#3182ce',sent:'#3182ce',delivered:'#3182ce',
+  working:'#805ad5',queued:'#718096'}[t.state]||'#a0aec0');
 const stateName=t=>({failed:'失败',done:'已完成',cancelled:'已取消',notified:'已发送通知',sent:'已发出',delivered:'已送达',working:'处理中',queued:'排队中'}[t.state]||t.state||'状态未记录');
 const addr=(t,to)=>[to?t.handler:t.requester,to?(t.handler_session_real||t.handler_session):t.requester_session];
 const key=(t,to)=>JSON.stringify(addr(t,to)[1]?addr(t,to):[...addr(t,to),t.task_id,to]);
@@ -70,9 +82,18 @@ window.TraceSessionExplorer={scope:scopeGraph,signature:graphSignature,mount(con
  const incoming=new Set(tasks.map(t=>key(t,true)));
  const earliest=tasks.slice().sort((a,b)=>(a.created_at||0)-(b.created_at||0)||a.task_id.localeCompare(b.task_id));
  const origin=earliest.find(t=>!incoming.has(key(t,false)))||earliest[0],start=key(origin,false);
+ // 标题里要写清是哪些用户在通信：同一个人可能有多个会话，按人聚合后标注会话数
+ const byClient=new Map();
+ scoped.sessions.forEach(x=>{
+   const n=x.name||'未知';
+   byClient.set(n,(byClient.get(n)||0)+1);
+ });
+ const clientLabel=[...byClient.entries()]
+   .map(([n,c])=>c>1?n+'('+c+'会话)':n)
+   .join(' · ');
  let chosen=seed.task_id,scale=1,seq=0,context=tasks,panX=0,panY=0,drag=null,suppressNextClick=false;
  document.getElementById('drawer')?.classList.add('explorer-open');
- container.innerHTML='<section class="tx" data-selected-task=""><div class="tx-head"><div class="tx-title"><strong>会话通信链路</strong><span>'+people.size+' 会话 · '+pairs.size+' 会话对 · '+tasks.length+' 次通信</span><span class="tx-total"></span></div><div class="tx-crumb">当前会话的直接上游一层＋下游 · 全部历史，不筛状态</div><div class="tx-viewpoint"><label>当前查看会话 <select data-viewer-select aria-label="当前查看会话"></select></label></div></div><div class="tx-layout"><div class="tx-map"><div class="tx-toolbar"><button data-action="all">本视角全部通信</button><button data-action="failures">只看失败通信</button><button data-action="origin">定位入口通信</button><button data-action="fit">适应全图</button><button data-action="zoom-in">＋</button><button data-action="zoom-out">−</button><span class="tx-legend">滚轮缩放 · 按住左键拖动 · 点击方向次数查看消息 · 标记始终贴合连线</span></div><div class="tx-stage" id="execution-canvas"></div><div class="tx-caption">范围按会话对首次通信方向展开；双向通信分成上下两条单向线，每条单独显示次数；不沿回传展开更早上游。<br>直接上游只保留与当前会话的通信，不展开上游的其他分支；此为展示范围，不是访问权限控制。</div></div><aside class="tx-inspector" id="execution-detail"></aside></div></section>';
+ container.innerHTML='<section class="tx" data-selected-task=""><div class="tx-head"><div class="tx-title"><strong>会话通信链路</strong><span class="tx-clients">'+esc(clientLabel)+'</span><span>'+people.size+' 会话 · '+pairs.size+' 会话对 · '+tasks.length+' 次通信</span><span class="tx-total"></span></div><div class="tx-crumb">当前会话的直接上游一层＋下游 · 全部历史，不筛状态</div><div class="tx-viewpoint"><label>当前查看会话 <select data-viewer-select aria-label="当前查看会话"></select></label></div></div><div class="tx-layout"><div class="tx-map"><div class="tx-toolbar"><span class="tx-panel-name">拓扑图</span><button data-action="all">本视角全部通信</button><button data-action="failures">只看失败通信</button><button data-action="origin">定位入口通信</button><button data-action="fit">适应全图</button><button data-action="zoom-in">＋</button><button data-action="zoom-out">−</button><span class="tx-legend">滚轮缩放 · 按住左键拖动 · 点击方向次数查看消息 · 标记始终贴合连线</span></div><div class="tx-stage" id="execution-canvas"></div><div class="tx-caption">范围按会话对首次通信方向展开；双向通信分成上下两条单向线，每条单独显示次数；不沿回传展开更早上游。<br>直接上游只保留与当前会话的通信，不展开上游的其他分支；此为展示范围，不是访问权限控制。</div></div><aside class="tx-inspector" id="execution-detail"></aside></div></section>';
  const host=container.querySelector('.tx'),stage=container.querySelector('#execution-canvas'),detail=container.querySelector('#execution-detail');
  host.dataset.viewerKey=scoped.viewer.id;
  host.dataset.graphSignature=graphSignature(tasks);
@@ -97,8 +118,16 @@ window.TraceSessionExplorer={scope:scopeGraph,signature:graphSignature,mount(con
  const cols=new Map();people.forEach(p=>{const d=p.depth??0;if(!cols.has(d))cols.set(d,[]);cols.get(d).push(p);});
  const layoutCols=[];
  [...cols.entries()].sort((a,b)=>a[0]-b[0]).forEach(([,col])=>{for(let i=0;i<col.length;i+=8)layoutCols.push(col.slice(i,i+8));});
- const height=Math.max(440,...layoutCols.map(c=>c.length*140+120)),width=Math.max(840,layoutCols.length*370+160);
- layoutCols.forEach((col,d)=>col.forEach((p,i)=>{p.x=65+d*370;p.y=(height-col.length*140)/2+i*140+70;}));
+ // 同方向通信最多的那条边决定了标签卡片能有多高，行距得跟着让开；
+ // 否则 7 行摘要的卡片会直接压住隔壁那条边的标签。
+ let maxBriefLines=0;
+ pairs.forEach(pair=>{
+   const f=pair.tasks.filter(t=>key(t,false)===pair.a).length;
+   maxBriefLines=Math.max(maxBriefLines,Math.min(f,7),Math.min(pair.tasks.length-f,7));
+ });
+ const rowGap=Math.max(140,maxBriefLines*16+110);
+ const height=Math.max(440,...layoutCols.map(c=>c.length*rowGap+120)),width=Math.max(840,layoutCols.length*370+160);
+ layoutCols.forEach((col,d)=>col.forEach((p,i)=>{p.x=65+d*370;p.y=(height-col.length*rowGap)/2+i*rowGap+70;}));
  let svg='<svg class="tx-svg" viewBox="0 0 '+width+' '+height+'" role="img" aria-label="会话通信方向图"><defs><marker id="session-arrow-forward" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" viewBox="0 0 12 12" refX="11" refY="6" orient="auto"><path d="M1 1 L11 6 L1 11 Z" fill="#65874e"/></marker><marker id="session-arrow-reverse" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" viewBox="0 0 12 12" refX="11" refY="6" orient="auto"><path d="M1 1 L11 6 L1 11 Z" fill="#557da1"/></marker><marker id="session-arrow-failed" markerUnits="userSpaceOnUse" markerWidth="12" markerHeight="12" viewBox="0 0 12 12" refX="11" refY="6" orient="auto"><path d="M1 1 L11 6 L1 11 Z" fill="#c03535"/></marker></defs>';
  const lanes=[];
  pairs.forEach(pair=>{
@@ -116,10 +145,15 @@ window.TraceSessionExplorer={scope:scopeGraph,signature:graphSignature,mount(con
      if(direction==='reverse')points.reverse();
      const path='M '+points[0].join(' ')+' C '+points.slice(1).map(p=>p.join(' ')).join(' ');
      const from=direction==='forward'?a:b,to=direction==='forward'?b:a;
-     const failedCount=pair.tasks.filter(t=>failed(t)&&(key(t,false)===pair.a)===(direction==='forward')).length;
+     const dirTasks=pair.tasks.filter(t=>(key(t,false)===pair.a)===(direction==='forward'));
+     const failedCount=dirTasks.filter(failed).length;
      const sharedCount=Math.max(...pair.tasks.map(shared));
      const label=from.name+' 发给 '+to.name+' '+count+' 次'+(failedCount?'，其中失败 '+failedCount+' 次':'')+(sharedCount>1?'，共享通信 · '+sharedCount+' 组':'')+'，点击查看消息';
-     const lane={pair,direction,count,label,points,failedCount,sharedCount};lanes.push(lane);
+     // 每一次请求的摘要都要能在图上看到，而不是只给个「N次」。
+     // 同一方向有多条时按时间顺序逐条列出。
+     const ordered=dirTasks.slice().sort((x,y)=>(x.created_at||0)-(y.created_at||0));
+     const briefs=ordered.map(t=>String(t.summary||'').trim()||'（无摘要）');
+     const lane={pair,direction,count,label,points,failedCount,sharedCount,briefs};lanes.push(lane);
      svg+='<g class="tx-route '+direction+(failedCount?' has-failure':'')+'" data-session-pair="'+pair.index+'" data-direction="'+direction+'" tabindex="0" role="button" aria-label="'+esc(label)+'"><title>'+esc(label)+'</title><path class="tx-hit" d="'+path+'"/><path class="tx-line" d="'+path+'" marker-end="url(#session-arrow-'+(failedCount?'failed':direction)+')"/></g>';
    }
  });
@@ -131,24 +165,98 @@ window.TraceSessionExplorer={scope:scopeGraph,signature:graphSignature,mount(con
  const svgElement=stage.querySelector('svg'),ns='http://www.w3.org/2000/svg',occupied=[];
  const controlLayer=document.createElementNS(ns,'g');controlLayer.classList.add('tx-controls');svgElement.appendChild(controlLayer);
  const overlaps=(a,b,pad=6)=>a.x<b.x+b.w+pad&&a.x+a.w+pad>b.x&&a.y<b.y+b.h+pad&&a.y+a.h+pad>b.y;
+ // 只数「有没有撞」不够：全部位置都撞时分不出优劣，结果就是挤在一起。
+ // 改用重叠面积，才能选出「没那么撞」的那个。
+ const overlapArea=(a,b,pad=6)=>{
+   const w=Math.min(a.x+a.w+pad,b.x+b.w)-Math.max(a.x-pad,b.x);
+   const h=Math.min(a.y+a.h+pad,b.y+b.h)-Math.max(a.y-pad,b.y);
+   return w>0&&h>0?w*h:0;
+ };
  const nodeBoxes=[...people.values()].map(p=>({x:p.x,y:p.y-38,w:170,h:76}));
  lanes.forEach(lane=>{
-   const {pair,direction,count,label,points,failedCount,sharedCount}=lane;
+   const {pair,direction,count,label,points,failedCount,sharedCount,briefs}=lane;
    const path=svgElement.querySelector('.tx-route[data-session-pair="'+pair.index+'"][data-direction="'+direction+'"] .tx-line'),length=path.getTotalLength();
-   const w=failedCount?146:76,h=sharedCount>1?52:34;
+   // 边上直接读摘要，不再先看「N次」再猜内容：
+   //   单次 → 只画摘要，次数没信息量，去掉
+   //   多次 → 表头标「N 次通信」+ 逐条带序号的摘要
+   const MAXB=6;
+   const multi=(briefs||[]).length>1;
+   const cap=multi?18:22;
+   const shown=(briefs||[]).slice(0,MAXB).map(s=>s.length>cap?s.slice(0,cap)+'…':s);
+   const rest=(briefs||[]).length-shown.length;
+   const lineH=16;
+   const headH=multi?18:0;                       // 多条时的「N 次通信」表头
+   const bodyH=shown.length*lineH+(rest>0?lineH:0);
+   const baseW=failedCount?146:76;
+   // 左边距 + 文字 + 右边距。估窄了最后一个字会顶出圆角矩形，所以宁可宽一点，
+   // 插进 DOM 后还会按真实渲染宽度再校正一次。
+   const padL=multi?14:33, padR=18;
+   const textW=shown.reduce((m,x)=>Math.max(m,padL+x.length*12.5+padR),0);
+   const w=shown.length?Math.max(baseW,Math.min(300,Math.ceil(textW))):baseW;
+   const h=Math.max(34,headH+bodyH+12)+(sharedCount>1?18:0);
    let best=null;
-   for(const fraction of [.5,.4,.6,.3,.7,.2,.8]){
-     const point=path.getPointAtLength(length*fraction),rect={x:point.x-w/2,y:point.y-17,w,h};
-     const score=nodeBoxes.filter(b=>overlaps(rect,b)).length*100+occupied.filter(b=>overlaps(rect,b)).length*10+Math.abs(fraction-.5);
-     if(!best||score<best.score)best={point,rect,score,fraction};
+   // 水平边上，沿路径怎么挪 y 都不变，光靠 fraction 根本躲不开旁边的高卡片，
+   // 所以还得允许垂直错开；偏移要计代价，能不移就不移。
+   const step=Math.max(26,h*0.5);
+   for(const fraction of [.5,.42,.58,.34,.66,.26,.74]){
+     const point=path.getPointAtLength(length*fraction);
+     for(const dy of [0,-1,1,-2,2,-3,3]){
+       const offY=dy*step;
+       const rect={x:point.x-w/2,y:point.y-17+offY,w,h};
+       const nodeA=nodeBoxes.reduce((s,b)=>s+overlapArea(rect,b),0);
+       const occA=occupied.reduce((s,b)=>s+overlapArea(rect,b),0);
+       const score=nodeA*4+occA*3+Math.abs(fraction-.5)*600+Math.abs(dy)*320;
+       if(!best||score<best.score)best={point,rect,score,fraction,offY};
+     }
    }
    occupied.push(best.rect);
    const group=document.createElementNS(ns,'g');group.setAttribute('class','tx-edge-control');group.dataset.controlPair=pair.index;group.dataset.laneDirection=direction;
-   group.dataset.fraction=best.fraction;group.setAttribute('transform',`translate(${best.point.x} ${best.point.y})`);
+   group.dataset.fraction=best.fraction;group.setAttribute('transform',`translate(${best.point.x} ${best.point.y+(best.offY||0)})`);
    const before=path.getPointAtLength(Math.max(0,length*best.fraction-2)),after=path.getPointAtLength(Math.min(length,length*best.fraction+2));
    const angle=Math.atan2(after.y-before.y,after.x-before.x)*180/Math.PI;
-   group.innerHTML='<g class="tx-direction-chip '+direction+(failedCount?' has-failure':'')+'" data-session-pair="'+pair.index+'" data-direction="'+direction+'" role="button" tabindex="0" aria-label="'+esc(label)+'" transform="translate('+(-w/2)+' -17)"><title>'+esc(label)+'</title><rect width="'+w+'" height="34" rx="10"/><circle cx="18" cy="17" r="11"/><path class="tx-direction-arrow" d="M-6 0 H6 M1 -5 L6 0 L1 5" transform="translate(18 17) rotate('+angle+')"/><text x="49" y="22" text-anchor="middle">'+count+'次</text>'+(failedCount?'<text class="tx-fail-label" x="107" y="22" text-anchor="middle">失败 '+failedCount+'次</text>':'')+(sharedCount>1?'<text class="tx-shared-label" x="'+(w/2)+'" y="48" text-anchor="middle">共享 · '+sharedCount+'组</text>':'')+'</g>';
+   // 摘要画进卡片内部，不再吊在卡片外面：多条时文字没有背景、压在连线上根本读不了
+   var inner='';
+   if(multi){
+     inner+='<text class="tx-chip-head" x="14" y="15">'+count+' 次通信</text>';
+     shown.forEach(function(s,i){
+       inner+='<text class="tx-chip-line" x="14" y="'+(15+headH+i*lineH)+'">'+
+         '<tspan class="tx-brief-idx">'+(i+1)+'.</tspan> '+esc(s)+'</text>';
+     });
+     if(rest>0)inner+='<text class="tx-chip-more" x="14" y="'+(15+headH+shown.length*lineH)+'">…还有 '+rest+' 条，点击查看</text>';
+   }else{
+     inner+='<circle cx="17" cy="'+(h/2)+'" r="10"/>'+
+       '<path class="tx-direction-arrow" d="M-5 0 H5 M1 -4 L5 0 L1 4" transform="translate(17 '+(h/2)+') rotate('+angle+')"/>'+
+       '<text class="tx-chip-line solo" x="33" y="'+(h/2+4)+'">'+esc(shown[0]||'（无摘要）')+'</text>';
+   }
+   if(failedCount)inner+='<text class="tx-fail-label" x="'+(w-12)+'" y="15" text-anchor="end">失败 '+failedCount+'次</text>';
+   if(sharedCount>1)inner+='<text class="tx-shared-label" x="14" y="'+(h-6)+'">共享 · '+sharedCount+'组</text>';
+   const briefTip=(briefs||[]).map(function(s,i){return (briefs.length>1?(i+1)+'. ':'')+s;}).join('\n');
+   // 标签被挪开后就不贴着连线了，用一根虚线拉回去，否则看不出它属于哪条边
+   const lead=Math.abs(best.offY||0)>10
+     ? '<path class="tx-lead" d="M0 '+(-best.offY)+' L0 0"/>'
+     : '';
+   group.innerHTML=lead+'<g class="tx-direction-chip '+direction+(multi?' multi':'')+(failedCount?' has-failure':'')+'" data-session-pair="'+pair.index+'" data-direction="'+direction+'" role="button" tabindex="0" aria-label="'+esc(label)+(briefTip?'，摘要：'+esc(briefTip):'')+'" transform="translate('+(-w/2)+' '+(-h/2)+')"><title>'+esc(label)+(briefTip?'\n'+esc(briefTip):'')+'</title><rect width="'+w+'" height="'+h+'" rx="10"/>'+inner+'</g>';
    controlLayer.appendChild(group);
+   // 文字宽度只能估，中英文混排更估不准。插进 DOM 后量一次真实宽度，
+   // 不够就把卡片撑开——宁可卡片宽一点，也不能把字切掉。
+   (function(){
+     const chip=group.querySelector('.tx-direction-chip');
+     const box=chip&&chip.querySelector('rect');
+     if(!box)return;
+     let right=0;
+     chip.querySelectorAll('text').forEach(function(t){
+       let bb; try{bb=t.getBBox();}catch(e){return;}
+       const x=parseFloat(t.getAttribute('x')||0);
+       right=Math.max(right, t.getAttribute('text-anchor')==='end' ? x : x+bb.width);
+     });
+     const need=Math.ceil(right+14);
+     if(need>w){
+       box.setAttribute('width',need);
+       chip.setAttribute('transform','translate('+(-need/2)+' '+(-h/2)+')');
+       // 同步给避让用的占位框，否则后面的标签会按旧宽度去躲
+       best.rect.w=need; best.rect.x=best.point.x-need/2;
+     }
+   })();
  });
  stage.style.overflow='hidden';stage.style.position='relative';stage.style.cursor='grab';stage.style.touchAction='none';
  svgElement.style.position='absolute';svgElement.style.left='0';svgElement.style.top='0';svgElement.style.transformOrigin='0 0';
@@ -164,30 +272,93 @@ window.TraceSessionExplorer={scope:scopeGraph,signature:graphSignature,mount(con
  stage.addEventListener('pointerleave',e=>{if(drag&&!drag.moved)endDrag(e);});
  stage.addEventListener('click',e=>{if(suppressNextClick){suppressNextClick=false;e.preventDefault();e.stopPropagation();}},true);
  function listHTML(list){
-   return '<section class="tx-messages"><div class="tx-message-heading"><strong>跨端消息</strong><span>'+list.length+' 条</span></div><div class="tx-message-grid">'+list.map(t=>{
-     const active=t.task_id===chosen;
-     return '<button type="button" class="tx-message-card '+(active?'is-selected':'')+(failed(t)?' has-failure':'')+'" data-select-task="'+esc(t.task_id)+'" aria-pressed="'+active+'"><span class="tx-card-meta"><span class="tx-card-kind '+(t.kind==='notify'?'notify':'')+'">'+(t.kind==='notify'?'通知':'请求')+' · '+esc(stateName(t))+'</span><time>'+esc(date(t.created_at))+'</time></span><span class="tx-card-route"><span class="tx-avatar">'+esc((t.requester||'?').slice(0,1).toUpperCase())+'</span><span class="tx-card-person"><b>'+esc(t.requester)+'</b><small>'+esc((t.requester_session||'未记录').slice(-8))+'</small></span><svg class="tx-card-arrow" width="22" height="16" viewBox="0 0 22 16" aria-hidden="true"><path d="M1 8H20M14 2L20 8L14 14"/></svg><span class="tx-card-person"><b>'+esc(t.handler)+'</b><small>'+esc((t.handler_session_real||t.handler_session||'未记录').slice(-8))+'</small></span></span><span class="tx-card-excerpt">'+esc(t.summary||'无摘要')+'</span>'+(shared(t)>1?'<span class="tx-shared-note">共享通信 · 出现在 '+shared(t)+' 组</span>':'')+(failed(t)?'<span class="tx-card-error">失败：'+esc(reason(t))+'</span>':'')+'<span class="tx-card-footer"><span>'+esc(t.task_id.slice(-12))+'</span><span>'+(active?'正在查看':'查看消息')+' <span aria-hidden="true">↗</span></span></span></button>';
-   }).join('')+'</div></section>';
+   // 用缩进 + 行首竖线表达层级，和外层链路卡片展开后的行同构。
+   // 原来的卡片一条占五六行，十来条就要滚半天，层级还看不出来。
+   return '<section class="tx-messages"><div class="tx-message-heading">' +
+     '<strong>跨端消息</strong><span>' + list.length + ' 条</span></div>' +
+     '<div class="tx-msg-tree">' + list.map(t => {
+     const active = t.task_id === chosen, d = Number(t.depth) || 0, bad = failed(t);
+     const abnormal = bad || t.state === 'cancelled';
+     const rs = (t.requester_session || '').slice(-6);
+     const hs = (t.handler_session_real || t.handler_session || '').slice(-6);
+     // 同一个人的两个会话在通信时，会话号是唯一能分清的东西，恰恰最不能省。
+     // 只有两端真是同一个会话（自环）才没必要重复写。
+     const selfLoop = rs && hs && rs === hs;
+     return '<button type="button" class="tx-mrow' + (active ? ' on' : '') + (bad ? ' bad' : '') +
+       '" data-select-task="' + esc(t.task_id) + '" aria-pressed="' + active +
+       '" style="--d:' + d + ';--rc:' + railColor(t) + '">' +
+       '<span class="tx-mrail"></span>' +
+       '<span class="tx-ml1">' +
+         (d ? '<span class="tx-mtee">└</span>' : '<span class="tx-mdot">●</span>') +
+         '<b>' + esc(t.requester) + '</b>' + (rs ? '<small>…' + esc(rs) + '</small>' : '') +
+         '<span class="tx-mdir">→</span>' +
+         '<b>' + esc(t.handler) + '</b>' + (hs && !selfLoop ? '<small>…' + esc(hs) + '</small>' : '') +
+         '<span class="tx-mgrow"></span>' +
+         '<time>' + esc(hms(t.created_at)) + '</time>' +
+       '</span>' +
+       '<span class="tx-ml2">' + (esc(t.summary) || '<i>（无摘要）</i>') + '</span>' +
+       // 正常态不占地方——行首竖线的颜色已经表达了状态；只有异常和共享才显式标出来
+       (abnormal || shared(t) > 1 ?
+         '<span class="tx-ml3">' +
+           (abnormal ? '<span class="tx-mstate bad">' + esc(stateName(t)) +
+             (bad ? '：' + esc(reason(t)) : '') + '</span>' : '') +
+           (shared(t) > 1 ? '<span class="tx-mtag">共享 ' + shared(t) + ' 组</span>' : '') +
+         '</span>' : '') +
+     '</button>';
+   }).join('') + '</div></section>';
  }
 
- async function select(id,list=context){
-   const t=byId.get(id);if(!t)return;chosen=id;context=list;const current=++seq;host.dataset.selectedTask=id;
+ async function select(id,list=context,opts={}){
+   const t=byId.get(id);if(!t)return;
+   // 从消息列表里点另一条时别把人弹回顶部：记住被点那行此刻在视口的高度，
+   // 重建 DOM 后再挪回同一位置，视觉上这一行就是不动的。
+   const rowSel='[data-select-task="'+CSS.escape(id)+'"]';
+   const anchor=opts.keepScroll?detail.querySelector(rowSel):null;
+   const keepAt=anchor?anchor.getBoundingClientRect().top:null;
+   const realign=()=>{
+     if(keepAt==null)return;
+     const el=detail.querySelector(rowSel);
+     if(el)detail.scrollTop+=el.getBoundingClientRect().top-keepAt;
+   };
+   chosen=id;context=list;const current=++seq;host.dataset.selectedTask=id;
    const pair=pairs.get(t._pair);
    stage.querySelectorAll('[data-session-pair]').forEach(el=>el.classList.toggle('on',Number(el.dataset.sessionPair)===pair.index&&(!el.dataset.direction||(key(t,false)===pair.a)===(el.dataset.direction==='forward'))));
    stage.querySelectorAll('[data-session]').forEach(el=>el.classList.toggle('on',[key(t,false),key(t,true)].includes(el.dataset.session)));
-   detail.innerHTML=(shared(t)>1?'<div class="tx-shared-note">共享通信 · 出现在 '+shared(t)+' 组，属于同一条记录</div>':'')+'<section class="tx-selection"><span class="tx-selection-eyebrow">当前通信</span><h3>'+esc(t.requester)+' <span class="tx-selection-arrow">→</span> '+esc(t.handler)+'</h3><div class="tx-selection-meta"><span class="tx-badge">'+(t.kind==='notify'?'通知':'请求')+' · '+esc(stateName(t))+'</span><time>'+esc(date(t.created_at))+'</time></div>'+(failed(t)?'<div class="tx-failure-detail" role="alert"><strong>这条通信失败了</strong><div>失败方向：'+esc(t.requester)+' 发给 '+esc(t.handler)+'</div><div>失败时间：'+esc(date(t.state_at||t.finished_at))+'</div><div>失败原因：'+esc(reason(t))+'</div>'+(t.error_code?'<div>错误代码：'+esc(t.error_code)+'</div>':'')+'</div>':'')+'<div class="tx-current-preview">'+esc(t.summary||'无摘要')+'</div><details class="tx-disclosure"><summary>查看已保存摘要与会话信息</summary><div class="tx-full-message">'+esc(t.summary||'无摘要')+'</div><div class="tx-info"><small>通信ID '+esc(t.task_id)+'</small><small>发起会话 '+esc(t.requester_session||'未记录')+'</small><small>目标会话 '+esc(t.handler_session_real||t.handler_session||'未记录')+'</small><small>入口 '+esc(t.handler_session||'未记录')+'</small></div></details><span class="tx-span-label" id="session-event-span">加载记录跨度…</span></section>'+listHTML(list)+'<details class="tx-disclosure tx-raw-events"><summary>原始通信记录与详细字段 <span id="tx-event-count"></span></summary><div class="tx-frames">加载中…</div></details>';
+   detail.innerHTML='<div class="tx-panel-name inspector">消息明细</div>'+(shared(t)>1?'<div class="tx-shared-note">共享通信 · 出现在 '+shared(t)+' 组，属于同一条记录</div>':'')+'<section class="tx-selection"><span class="tx-selection-eyebrow">当前通信</span><h3>'+esc(t.requester)+' <span class="tx-selection-arrow">→</span> '+esc(t.handler)+'</h3><div class="tx-selection-meta"><span class="tx-tag kind '+(t.kind==='notify'?'notify':'req')+'">'+(t.kind==='notify'?'单向通知':'请求')+'</span><span class="tx-tag st '+stateTone(t)+'">'+esc(stateName(t))+'</span>'+(t.parent_task_id?'<span class="tx-tag sub">子任务</span>':'')+'<time>'+esc(date(t.created_at))+'</time></div>'+(failed(t)?'<div class="tx-failure-detail" role="alert"><strong>这条通信失败了</strong><div>失败方向：'+esc(t.requester)+' 发给 '+esc(t.handler)+'</div><div>失败时间：'+esc(date(t.state_at||t.finished_at))+'</div><div>失败原因：'+esc(reason(t))+'</div>'+(t.error_code?'<div>错误代码：'+esc(t.error_code)+'</div>':'')+'</div>':'')+'<div class="tx-current-preview">'+esc(t.summary||'无摘要')+'</div><div class="tx-body-block" id="tx-msg-body"><div class="tx-body-label">请求正文</div><div class="tx-body-text loading">加载中…</div></div><details class="tx-fold"><summary>技术字段<span class="tx-fold-hint">通信ID · 会话 · 时间</span></summary><div class="tx-info"><div><span>通信ID</span><code>'+esc(t.task_id)+'</code></div><div><span>发起会话</span><code>'+esc(t.requester_session||'未记录')+'</code></div><div><span>目标会话</span><code>'+esc(t.handler_session_real||t.handler_session||'未记录')+'</code></div><div><span>入口会话</span><code>'+esc(t.handler_session||'未记录')+'</code></div>'+(t.parent_task_id?'<div><span>父任务</span><code>'+esc(t.parent_task_id)+'</code></div>':'')+'<div><span>创建时间</span><code>'+esc(date(t.created_at))+'</code></div>'+(t.finished_at?'<div><span>结束时间</span><code>'+esc(date(t.finished_at))+'</code></div>':'')+'</div></details><span class="tx-span-label" id="session-event-span">加载记录跨度…</span></section>'+listHTML(list)+'<section class="tx-raw-events open"><div class="tx-message-heading"><strong>原始通信记录</strong><span id="tx-event-count"></span></div><div class="tx-frames">加载中…</div></section>';
 
-   detail.scrollTop=0;
+   if(keepAt==null)detail.scrollTop=0; else realign();
    try{
       const r=await fetch('/api/trace/tasks/'+encodeURIComponent(id)+'/events?limit=20000');if(!r.ok)throw Error('HTTP '+r.status);const data=await r.json();if(seq!==current)return;
       const es=(data.events||[]).sort((a,b)=>a.ts-b.ts||a.id-b.id),start=es[0]?.ts,end=es.at(-1)?.ts;
       detail.querySelector('#session-event-span').textContent='最早到最新记录相隔 '+duration(start==null?null:end-start);
       detail.querySelector('#tx-event-count').textContent='（'+es.length+'）';
-      detail.querySelector('.tx-frames').innerHTML=(es.length>=20000?'<div class="tx-warning">达到单次接口上限20000条，可能还有未展示事件。</div>':'')+es.map(e=>'<div class="tx-frame"><b>'+esc(eventNames[e.ev]||e.ev)+'</b> · '+esc(date(e.ts))+'<br>'+esc(e.from_client)+' → '+esc(e.to_client)+'<br>距首条 '+duration(e.ts-start)+'<details><summary>完整事件字段</summary><pre style="white-space:pre-wrap;overflow-wrap:anywhere">'+esc(JSON.stringify(e,null,2))+'</pre></details>'+esc(e.summary||e.message||e.peer_state||'')+'</div>').join('');
+      realign();
+      // 正文取自 request/notify 事件；回复正文取 response 事件
+      (function(){
+        var box=detail.querySelector('#tx-msg-body'); if(!box)return;
+        var pick=function(kinds){
+          for(var i=0;i<es.length;i++){
+            if(kinds.indexOf(es[i].ev)>=0&&es[i].message&&String(es[i].message).trim())return es[i];
+          }
+          return null;
+        };
+        var req=pick(['request','notify']), rep=pick(['response']);
+        var html='';
+        if(req)html+='<div class="tx-body-label">'+(req.ev==='notify'?'通知正文':'请求正文')+'</div>'+
+          '<div class="tx-body-text">'+esc(req.message)+'</div>';
+        if(rep)html+='<div class="tx-body-label reply">回复正文</div>'+
+          '<div class="tx-body-text reply">'+esc(rep.message)+'</div>';
+        if(!html)html='<div class="tx-body-label">请求正文</div>'+
+          '<div class="tx-body-text empty">这条记录没有正文。中继只对改动之后的新消息保存正文，'+
+          '历史记录当时只存了摘要；也可能是 trace_payload_chars 被设成了 0。</div>';
+        box.innerHTML=html;
+      })();
+      detail.querySelector('.tx-frames').innerHTML=(es.length>=20000?'<div class="tx-warning">达到单次接口上限20000条，可能还有未展示事件。</div>':'')+es.map(e=>'<div class="tx-frame"><div class="tx-frame-head"><b>'+esc(eventNames[e.ev]||e.ev)+'</b><time>'+esc(date(e.ts))+'</time></div><div class="tx-frame-sub">'+esc(e.from_client)+' → '+esc(e.to_client)+' · 距首条 '+duration(e.ts-start)+'</div>'+((e.summary||e.message||e.peer_state)?'<div class="tx-frame-text">'+esc(e.summary||e.message||e.peer_state)+'</div>':'')+'<details class="tx-fold json"><summary>原始字段<span class="tx-fold-hint">JSON</span></summary><pre class="tx-raw-json">'+esc(JSON.stringify(e,null,2))+'</pre></details></div>').join('');
+      realign();
    }catch(err){if(seq===current){detail.querySelector('.tx-frames').textContent='事件加载失败：'+err;detail.querySelector('#session-event-span').textContent='记录跨度未记录';}}
  }
  host.addEventListener('click',e=>{
-   const task=e.target.closest('[data-select-task]');if(task){select(task.dataset.selectTask);return;}
+   const task=e.target.closest('[data-select-task]');if(task){select(task.dataset.selectTask,context,{keepScroll:true});return;}
    const pairEl=e.target.closest('[data-session-pair]');if(pairEl){const pair=[...pairs.values()].find(p=>p.index===Number(pairEl.dataset.sessionPair));let list=pair.tasks;const dir=pairEl.dataset.direction;if(dir)list=list.filter(t=>(key(t,false)===pair.a)===(dir==='forward'));select((list.find(failed)||list.find(t=>t.task_id===chosen)||list[0]).task_id,list);return;}
 
    const node=e.target.closest('[data-session]');if(node){const list=people.get(node.dataset.session).tasks;select((list.find(t=>t.task_id===chosen)||list[0]).task_id,list);return;}
