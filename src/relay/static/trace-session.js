@@ -176,69 +176,44 @@ window.TraceSessionExplorer={scope:scopeGraph,signature:graphSignature,mount(con
  lanes.forEach(lane=>{
    const {pair,direction,count,label,points,failedCount,sharedCount,briefs}=lane;
    const path=svgElement.querySelector('.tx-route[data-session-pair="'+pair.index+'"][data-direction="'+direction+'"] .tx-line'),length=path.getTotalLength();
-   // 边上直接读摘要，不再先看「N次」再猜内容：
-   //   单次 → 只画摘要，次数没信息量，去掉
-   //   多次 → 表头标「N 次通信」+ 逐条带序号的摘要
-   const MAXB=6;
-   const multi=(briefs||[]).length>1;
-   const cap=multi?18:22;
-   const shown=(briefs||[]).slice(0,MAXB).map(s=>s.length>cap?s.slice(0,cap)+'…':s);
-   const rest=(briefs||[]).length-shown.length;
-   const lineH=16;
-   const headH=multi?18:0;                       // 多条时的「N 次通信」表头
-   const bodyH=shown.length*lineH+(rest>0?lineH:0);
-   const baseW=failedCount?146:76;
-   // 左边距 + 文字 + 右边距。估窄了最后一个字会顶出圆角矩形，所以宁可宽一点，
-   // 插进 DOM 后还会按真实渲染宽度再校正一次。
-   const padL=multi?14:33, padR=18;
-   const textW=shown.reduce((m,x)=>Math.max(m,padL+x.length*12.5+padR),0);
-   const w=shown.length?Math.max(baseW,Math.min(300,Math.ceil(textW))):baseW;
-   const h=Math.max(34,headH+bodyH+12)+(sharedCount>1?18:0);
-   let best=null;
-   // 水平边上，沿路径怎么挪 y 都不变，光靠 fraction 根本躲不开旁边的高卡片，
-   // 所以还得允许垂直错开；偏移要计代价，能不移就不移。
-   const step=Math.max(26,h*0.5);
-   for(const fraction of [.5,.42,.58,.34,.66,.26,.74]){
-     const point=path.getPointAtLength(length*fraction);
-     for(const dy of [0,-1,1,-2,2,-3,3]){
-       const offY=dy*step;
-       const rect={x:point.x-w/2,y:point.y-17+offY,w,h};
-       const nodeA=nodeBoxes.reduce((s,b)=>s+overlapArea(rect,b),0);
-       const occA=occupied.reduce((s,b)=>s+overlapArea(rect,b),0);
-       const score=nodeA*4+occA*3+Math.abs(fraction-.5)*600+Math.abs(dy)*320;
-       if(!best||score<best.score)best={point,rect,score,fraction,offY};
-     }
-   }
-   occupied.push(best.rect);
+   // 边上只放一行，读起来才不费劲：
+   //   单次 → 直接显示这条消息的摘要（超长截断，别把卡片撑爆）
+   //   多次 → 只显示「N 次通信」，逐条摘要右侧消息明细里已经有了，这里再列一遍纯属重复
+   const list=briefs||[];
+   const multi=count>1||list.length>1;
+   // 截得狠一点。标签钉在连线中点后就不再躲让，太宽会直接压到两头的节点框上
+   // （实测 263px 的标签把右侧节点名字盖掉了）。完整摘要悬停和右侧明细里都有。
+   // 有失败角标时要再短一截，否则摘要会和「失败 N」叠在一起（实测踩过）。
+   const CAP=failedCount?8:12;
+   const raw=(list[0]||'').trim();
+   const text=multi?(count+' 次通信')
+                   :(raw?(raw.length>CAP?raw.slice(0,CAP)+'…':raw):'（无摘要）');
+   const h=34+(sharedCount>1?14:0);
+   // 宽度先估：图标 + 文字 + 失败角标 + 右边距。插进 DOM 后还会按真实宽度校正一次。
+   // 上限 190：节点间距就那么大，再宽就贴到节点上了。
+   const w=Math.max(76,Math.min(190,Math.ceil(33+text.length*13+14+(failedCount?52:0))));
+   // 标签一律钉在连线中点，不再做垂直错开。
+   // 之前允许 dy 偏移是为了躲开节点，但代价是标签飘到别处、还要拉虚线找回来，
+   // 反而更难读（实测出现过标签跑到上一层、和别的文字叠在一起）。
+   // 现在宁可挤一点，也保证「标签一定在它那条线上」。
+   const point=path.getPointAtLength(length*0.5);
+   const rect={x:point.x-w/2,y:point.y-h/2,w,h};
+   occupied.push(rect);
    const group=document.createElementNS(ns,'g');group.setAttribute('class','tx-edge-control');group.dataset.controlPair=pair.index;group.dataset.laneDirection=direction;
-   group.dataset.fraction=best.fraction;group.setAttribute('transform',`translate(${best.point.x} ${best.point.y+(best.offY||0)})`);
-   const before=path.getPointAtLength(Math.max(0,length*best.fraction-2)),after=path.getPointAtLength(Math.min(length,length*best.fraction+2));
+   group.dataset.fraction=0.5;group.setAttribute('transform',`translate(${point.x} ${point.y})`);
+   const before=path.getPointAtLength(Math.max(0,length*0.5-2)),after=path.getPointAtLength(Math.min(length,length*0.5+2));
    const angle=Math.atan2(after.y-before.y,after.x-before.x)*180/Math.PI;
-   // 摘要画进卡片内部，不再吊在卡片外面：多条时文字没有背景、压在连线上根本读不了
-   var inner='';
-   if(multi){
-     inner+='<text class="tx-chip-head" x="14" y="15">'+count+' 次通信</text>';
-     shown.forEach(function(s,i){
-       inner+='<text class="tx-chip-line" x="14" y="'+(15+headH+i*lineH)+'">'+
-         '<tspan class="tx-brief-idx">'+(i+1)+'.</tspan> '+esc(s)+'</text>';
-     });
-     if(rest>0)inner+='<text class="tx-chip-more" x="14" y="'+(15+headH+shown.length*lineH)+'">…还有 '+rest+' 条，点击查看</text>';
-   }else{
-     inner+='<circle cx="17" cy="'+(h/2)+'" r="10"/>'+
-       '<path class="tx-direction-arrow" d="M-5 0 H5 M1 -4 L5 0 L1 4" transform="translate(17 '+(h/2)+') rotate('+angle+')"/>'+
-       '<text class="tx-chip-line solo" x="33" y="'+(h/2+4)+'">'+esc(shown[0]||'（无摘要）')+'</text>';
-   }
-   if(failedCount)inner+='<text class="tx-fail-label" x="'+(w-12)+'" y="15" text-anchor="end">失败 '+failedCount+'次</text>';
-   if(sharedCount>1)inner+='<text class="tx-shared-label" x="14" y="'+(h-6)+'">共享 · '+sharedCount+'组</text>';
-   const briefTip=(briefs||[]).map(function(s,i){return (briefs.length>1?(i+1)+'. ':'')+s;}).join('\n');
-   // 标签被挪开后就不贴着连线了，用一根虚线拉回去，否则看不出它属于哪条边
-   const lead=Math.abs(best.offY||0)>10
-     ? '<path class="tx-lead" d="M0 '+(-best.offY)+' L0 0"/>'
-     : '';
-   group.innerHTML=lead+'<g class="tx-direction-chip '+direction+(multi?' multi':'')+(failedCount?' has-failure':'')+'" data-session-pair="'+pair.index+'" data-direction="'+direction+'" role="button" tabindex="0" aria-label="'+esc(label)+(briefTip?'，摘要：'+esc(briefTip):'')+'" transform="translate('+(-w/2)+' '+(-h/2)+')"><title>'+esc(label)+(briefTip?'\n'+esc(briefTip):'')+'</title><rect width="'+w+'" height="'+h+'" rx="10"/>'+inner+'</g>';
+   var inner='<circle cx="17" cy="'+(h/2)+'" r="10"/>'+
+     '<path class="tx-direction-arrow" d="M-5 0 H5 M1 -4 L5 0 L1 4" transform="translate(17 '+(h/2)+') rotate('+angle+')"/>'+
+     '<text class="tx-chip-line solo" x="33" y="'+(h/2+4)+'">'+esc(text)+'</text>';
+   if(failedCount)inner+='<text class="tx-fail-label" x="'+(w-12)+'" y="'+(h/2+4)+'" text-anchor="end">失败 '+failedCount+'</text>';
+   if(sharedCount>1)inner+='<text class="tx-shared-label" x="14" y="'+(h-4)+'">共享 · '+sharedCount+'组</text>';
+   // 悬停能看到全部摘要，截断只影响画布上的显示，不丢信息
+   const briefTip=list.map(function(s,i){return (list.length>1?(i+1)+'. ':'')+s;}).join('\n');
+   group.innerHTML='<g class="tx-direction-chip '+direction+(multi?' multi':'')+(failedCount?' has-failure':'')+'" data-session-pair="'+pair.index+'" data-direction="'+direction+'" role="button" tabindex="0" aria-label="'+esc(label)+(briefTip?'，摘要：'+esc(briefTip):'')+'" transform="translate('+(-w/2)+' '+(-h/2)+')"><title>'+esc(label)+(briefTip?'\n'+esc(briefTip):'')+'</title><rect width="'+w+'" height="'+h+'" rx="10"/>'+inner+'</g>';
    controlLayer.appendChild(group);
    // 文字宽度只能估，中英文混排更估不准。插进 DOM 后量一次真实宽度，
-   // 不够就把卡片撑开——宁可卡片宽一点，也不能把字切掉。
+   // 不够就把卡片撑开——但不超过 210，宁可文字被切也不能盖住节点。
    (function(){
      const chip=group.querySelector('.tx-direction-chip');
      const box=chip&&chip.querySelector('rect');
@@ -249,12 +224,28 @@ window.TraceSessionExplorer={scope:scopeGraph,signature:graphSignature,mount(con
        const x=parseFloat(t.getAttribute('x')||0);
        right=Math.max(right, t.getAttribute('text-anchor')==='end' ? x : x+bb.width);
      });
-     const need=Math.ceil(right+14);
+     const need=Math.min(210,Math.ceil(right+14));
      if(need>w){
        box.setAttribute('width',need);
        chip.setAttribute('transform','translate('+(-need/2)+' '+(-h/2)+')');
-       // 同步给避让用的占位框，否则后面的标签会按旧宽度去躲
-       best.rect.w=need; best.rect.x=best.point.x-need/2;
+       rect.w=need; rect.x=point.x-need/2;
+     }
+     // 失败角标是右对齐的，它跟摘要可能撞上。撞了就把摘要再切短，
+     // 直到不重叠为止——两块文字叠在一起谁都读不出来。
+     const solo=chip.querySelector('.tx-chip-line.solo');
+     const fail=chip.querySelector('.tx-fail-label');
+     if(solo&&fail){
+       const finalW=parseFloat(box.getAttribute('width'));
+       let guard=0;
+       while(guard++<12){
+         let sb,fb; try{sb=solo.getBBox();fb=fail.getBBox();}catch(e){break;}
+         const soloRight=parseFloat(solo.getAttribute('x'))+sb.width;
+         const failLeft=finalW-12-fb.width;
+         if(soloRight<=failLeft-6)break;
+         const cur=solo.textContent.replace(/\u2026$/,'');
+         if(cur.length<=2)break;
+         solo.textContent=cur.slice(0,cur.length-1)+'\u2026';
+       }
      }
    })();
  });

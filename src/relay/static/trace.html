@@ -214,15 +214,199 @@
   .gh .gusers { flex: none; font-size: 11.5px; font-weight: 600; color: var(--ink-2, #3a4452);
     background: var(--panel-2, #f2f4f6); border: 1px solid var(--line, #e3e6ea);
     border-radius: 999px; padding: 1px 9px; white-space: nowrap; }
-  .gcard.fold .gbody { display: none; }
+  /* ---------- 快捷筛选条 ---------- */
+  .quick { padding: 10px 18px 2px; display: flex; flex-direction: column; gap: 6px; }
+  .qrow { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .qrow .ql { width: 30px; flex: none; font-size: 11px; color: var(--ink-4); }
+  .qc { cursor: pointer; user-select: none; font-size: 12px; padding: 3px 11px;
+    border-radius: 999px; border: 1px solid var(--line-2); background: var(--panel);
+    color: var(--ink-2); transition: background .12s, border-color .12s, color .12s; }
+  .qc:hover { background: var(--fill); border-color: var(--line); }
+  .qc.on { background: var(--accent); border-color: var(--accent); color: #fff; font-weight: 600; }
+  .qc.bad.on { background: #d64545; border-color: #d64545; }
+  /* ---------- 当前筛选态 ---------- */
+  .fbar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    padding: 8px 18px 0; font-size: 12px; }
+  .fbar .ft { display: inline-flex; align-items: center; gap: 6px; padding: 2px 6px 2px 10px;
+    border-radius: 999px; background: var(--accent-tint); border: 1px solid var(--accent);
+    color: var(--ink-1); }
+  .fbar .ft b { font-weight: 600; }
+  .fbar .ft i { cursor: pointer; font-style: normal; color: var(--ink-3);
+    padding: 0 3px; border-radius: 50%; }
+  .fbar .ft i:hover { background: #0002; color: var(--ink-1); }
+  .fbar .fclear { cursor: pointer; color: var(--accent); text-decoration: underline;
+    margin-left: 4px; }
+  /* ---------- 统计面板 ---------- */
+  #stats-body { padding: 12px 16px 28px; }
+  /* 顶部范围条 */
+  .abar { display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+    padding: 8px 13px; margin-bottom: 11px; font-size: 12px; color: var(--ink-3);
+    background: var(--fill); border: 1px solid var(--line-2); border-radius: 9px; }
+  .abar b { color: var(--ink-1); }
+  .abar .asep { color: var(--ink-5); }
+  .abar .agrow { flex: 1; }
+  .abar .ahint { color: var(--ink-4); }
+  .swarn { margin-left: 6px; padding: 1px 8px; border-radius: 999px;
+    background: #fdf7e8; color: #8a6516; border: 1px solid #ecdcb4; }
+  /* 四个核心指标 */
+  .ahero { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+    gap: 11px; margin-bottom: 13px; }
+  .hcard { padding: 13px 15px; background: var(--panel);
+    border: 1px solid var(--line-2); border-radius: 12px; }
+  .hcard .hk { font-size: 11.5px; color: var(--ink-4); }
+  .hcard .hv { margin: 4px 0 2px; font-size: 27px; font-weight: 700; color: var(--ink-1);
+    line-height: 1.15; }
+  .hcard .hv.ok { color: #2f855a; } .hcard .hv.bad { color: #d64545; }
+  .hcard .hv.warn { color: #b7791f; }
+  .hcard .hs { font-size: 11px; color: var(--ink-4); }
+  /* 卡片网格：默认两列，通栏用 .wide */
+  .agrid { display: grid; grid-template-columns: repeat(auto-fit, minmax(330px, 1fr)); gap: 13px; }
+  .acard { padding: 13px 15px; background: var(--panel);
+    border: 1px solid var(--line-2); border-radius: 12px; min-width: 0; }
+  .acard.wide { grid-column: 1 / -1; }
+  .acard h3 { margin: 0 0 11px; font-size: 13.5px; color: var(--ink-1); }
+  .ssub { margin: 12px 0 6px; font-size: 11.5px; font-weight: 600; color: var(--ink-3); }
+  .snote { margin-top: 9px; font-size: 11px; line-height: 1.75; color: var(--ink-4); }
+  .snote b { color: var(--ink-2); }
+  /* 环形图 */
+  .donut { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; }
+  .dsvg { flex: none; width: 128px; height: 128px; }
+  .dsvg text.dnum { font-size: 19px; font-weight: 700; fill: var(--ink-1);
+    text-anchor: middle; font-family: var(--mono); }
+  .dsvg text.dlab { font-size: 8px; fill: var(--ink-4); text-anchor: middle; }
+  .dlegend { flex: 1; min-width: 150px; display: flex; flex-direction: column; gap: 3px; }
+  .dlgi { display: flex; align-items: center; gap: 7px; font-size: 12px; padding: 2px 4px;
+    border-radius: 5px; }
+  .dlgi[data-jump] { cursor: pointer; }
+  .dlgi[data-jump]:hover { background: var(--fill); }
+  .dlgi i { flex: none; width: 9px; height: 9px; border-radius: 2px; }
+  .dlgi .dn { flex: 1; min-width: 0; color: var(--ink-2);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .dlgi b { flex: none; font-weight: 700; color: var(--ink-1); font-family: var(--mono); }
+  .dlgi em { flex: none; width: 46px; text-align: right; font-style: normal;
+    font-size: 11px; color: var(--ink-4); font-family: var(--mono); }
+  /* 纵向柱状：div 实现，文字用真实 CSS 字号，不会被 SVG 拉伸变形 */
+  .vb { display: flex; align-items: flex-end; gap: 6px; height: 146px; padding-top: 6px; }
+  .vbcol { flex: 1; min-width: 0; display: flex; flex-direction: column; height: 100%; }
+  .vbcol .vbbar { flex: 1; display: flex; align-items: flex-end; justify-content: center;
+    min-height: 0; }
+  .vbcol .vbfill { width: 100%; max-width: 44px; min-height: 3px; border-radius: 4px 4px 0 0;
+    position: relative; display: flex; justify-content: center; }
+  .vbcol .vbfill.zero { height: 3px; background: var(--line-2); }
+  /* 数值挂在柱子正上方，跟着柱高走 */
+  .vbcol .vbnum { position: absolute; top: -17px; font-size: 12px; font-weight: 600;
+    color: var(--ink-1); font-family: var(--mono); white-space: nowrap; line-height: 1; }
+  .vbcol .vbnum.dim { color: var(--ink-5); font-weight: 400; }
+  /* 轴标签：给足高度并与柱底脱开，不然会被压在柱子上看不清
+     （这里不用 overflow:hidden 截断：「5-30s」「直接发起」这种实测会被切掉） */
+  .vbcol .vblab { height: 30px; padding-top: 9px; font-size: 11.5px; color: var(--ink-2);
+    text-align: center; line-height: 1.25; word-break: keep-all; }
+  .vbcol:hover .vbfill { filter: brightness(1.08); }
+  .vbcol.clickable { cursor: pointer; border-radius: 6px; transition: background .12s; }
+  .vbcol.clickable:hover { background: var(--fill); }
+  .vbcol.clickable:hover .vblab { color: var(--accent, #1b6ef3); }
+  /* ---------- 问题视角（按根因聚合的失败）---------- */
+  .ilist { display: flex; flex-direction: column; gap: 8px; padding: 4px 2px 10px; }
+  .itip { font-size: 12px; color: var(--ink-3); background: var(--fill);
+    border: 1px solid var(--line-2); border-radius: 8px; padding: 7px 11px; }
+  .issue { border: 1px solid var(--line-2); border-radius: 10px; padding: 10px 12px;
+    background: var(--panel); cursor: pointer; transition: border-color .12s, box-shadow .12s; }
+  .issue:hover { border-color: var(--accent, #1b6ef3);
+    box-shadow: 0 0 0 3px var(--accent-tint, #eaf2ff); }
+  .ihead { display: flex; align-items: center; gap: 8px; }
+  /* 发生次数放最大：按影响面排序的列表，次数就是第一眼要看的 */
+  .icount { font-size: 19px; font-weight: 700; color: var(--bad, #c03535);
+    font-family: var(--mono); min-width: 30px; }
+  .ilabel { font-size: 13.5px; font-weight: 600; color: var(--ink-1); }
+  .inew { font-size: 10.5px; color: #fff; background: var(--bad, #c03535);
+    border-radius: 4px; padding: 1px 6px; font-weight: 600; }
+  .imet { font-size: 11.5px; color: var(--ink-4); font-family: var(--mono); }
+  .ibar { height: 4px; background: var(--line-soft); border-radius: 3px;
+    overflow: hidden; margin: 7px 0 6px; }
+  .ibar i { display: block; height: 100%; background: var(--bad, #c03535); opacity: .65; }
+  .iwho { font-size: 12.5px; color: var(--ink-2); }
+  .iwho b { color: var(--ink-1); }
+  .idim { color: var(--ink-4); margin-left: 6px; font-size: 11.5px; }
+  .ihint { font-size: 11.5px; color: var(--ink-4); margin-top: 3px; }
+  .isamp { margin-top: 6px; display: flex; flex-direction: column; gap: 2px; }
+  .isamp span { font-size: 11.5px; color: var(--ink-3); overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap; padding-left: 10px;
+    border-left: 2px solid var(--line-2); }
+  /* 横向条形 */
+  .srows { display: flex; flex-direction: column; gap: 4px; }
+  .srow { display: flex; align-items: center; gap: 9px; font-size: 12px; }
+  .srow.clickable { cursor: pointer; border-radius: 6px; }
+  .srow.clickable:hover { background: var(--fill); }
+  .srow .sname { flex: none; width: 140px; color: var(--ink-2);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .srow .strack { flex: 1; height: 14px; background: var(--fill);
+    border-radius: 4px; overflow: hidden; min-width: 30px; }
+  .srow .sfill { height: 100%; background: #4c7fd4; border-radius: 4px; }
+  .srow .sfill.bad { background: #d97b72; }
+  .srow .sval { flex: none; min-width: 34px; text-align: right;
+    color: var(--ink-3); font-size: 11px; font-family: var(--mono); }
+  /* 趋势图：div 布局，每根柱子自带日期和数值 */
+  .tchart2 { position: relative; height: 172px; margin-top: 4px; }
+  .tgrid { position: absolute; inset: 0 0 34px 34px; display: flex;
+    flex-direction: column; justify-content: space-between; pointer-events: none; }
+  .tgline { position: relative; border-top: 1px dashed var(--line-soft); height: 0; }
+  .tgline span { position: absolute; left: -34px; top: -7px; width: 30px;
+    text-align: right; font-size: 10px; color: var(--ink-5); font-family: var(--mono); }
+  .tcols { position: absolute; inset: 0 0 0 34px; display: flex; align-items: flex-end; gap: 2px; }
+  .tcol { flex: 1; min-width: 0; display: flex; flex-direction: column;
+    height: 100%; cursor: default; }
+  .tcol .tbar { flex: 1; display: flex; align-items: flex-end; justify-content: center; }
+  /* 数值 + 柱体打包成一个高度百分比的容器，数值就能紧贴柱顶 */
+  .tcol .tfill { width: 72%; max-width: 30px; height: 100%; display: flex;
+    flex-direction: column; justify-content: flex-end; }
+  .tcol .tfill.zero { height: auto; }
+  .tcol .tnum { height: 14px; font-size: 10px; color: var(--ink-3);
+    text-align: center; font-family: var(--mono); line-height: 14px;
+    white-space: nowrap; }
+  .tcol .tstack { flex: 1; min-height: 2px; display: flex;
+    flex-direction: column-reverse; border-radius: 3px 3px 0 0; overflow: hidden; }
+  .tcol .tstack i { display: block; width: 100%; }
+  .tcol .tzero { height: 2px; background: var(--line-2); }
+  .tcol .tdate { height: 20px; padding-top: 4px; font-size: 10px; color: var(--ink-4);
+    text-align: center; white-space: nowrap; font-family: var(--mono); }
+  .tcol .tdate.peak { color: var(--ink-2); font-weight: 600; }
+  .tcol:hover .tstack { filter: brightness(1.08); }
+  .tlegend2 { display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+    margin-top: 6px; font-size: 11px; color: var(--ink-3); }
+  .tlegend2 i { display: inline-block; width: 9px; height: 9px; border-radius: 2px;
+    margin: 0 3px 0 10px; vertical-align: -1px; }
+  .tlegend2 i:first-child { margin-left: 0; }
+  .tlegend2 .tnote { margin-left: auto; color: var(--ink-4); }
+  /* 慢请求 */
+  .slowlist { display: flex; flex-direction: column; gap: 2px; }
+  .slow { display: flex; align-items: center; gap: 9px; padding: 4px 7px;
+    border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .slow:hover { background: var(--fill); }
+  .slow .stime { flex: none; width: 54px; font-weight: 700; color: #b7791f;
+    font-family: var(--mono); font-size: 11.5px; }
+  .slow .sway { flex: none; width: 150px; color: var(--ink-2); font-size: 11.5px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .slow .ssum { flex: 1; min-width: 0; color: var(--ink-3);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* 参与者表 */
+  .stable { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .stable th { text-align: left; padding: 5px 9px; color: var(--ink-4);
+    font-weight: 600; border-bottom: 1px solid var(--line-2); }
+  .stable td { padding: 5px 9px; border-bottom: 1px solid var(--line-soft); }
+  .stable tbody tr { cursor: pointer; }
+  .stable tbody tr:hover { background: var(--fill); }
+  .stable td.bad { color: #d64545; font-weight: 600; }
+  /* 热力图 */
+  .heat { display: flex; flex-direction: column; gap: 2px; }
+  .hrow { display: flex; align-items: center; gap: 2px; }
+  .hlab { flex: none; width: 15px; font-size: 10px; color: var(--ink-4); text-align: center; }
+  .hcell { flex: 1; height: 14px; border-radius: 2px; min-width: 5px; }
+  .hrow.hhead .hcell { height: 11px; background: none !important; }
+  .hcell.hno { font-size: 9px; color: var(--ink-5); text-align: left; }
+
   .gcaret { display: inline-block; font-size: 14px; color: var(--ink-40, #9aa4b0);
     transition: transform .14s; transform: rotate(0deg); width: 10px; }
   .gcaret.open { transform: rotate(90deg); }
-  .gh .gmap { font-size: 12px; color: var(--accent, #1b6ef3); background: var(--panel);
-    border: 1px solid var(--line-2); border-radius: 6px; padding: 2px 9px; cursor: pointer;
-    opacity: 0; transition: opacity .12s; }
-  .gh:hover .gmap, .gcard:not(.fold) .gh .gmap { opacity: 1; }
-  .gh .gmap:hover { border-color: var(--accent, #1b6ef3); background: var(--accent-tint, #eaf2ff); }
   .gbody { padding: 6px 10px 8px; }
   /* 缩进直接用后端算好的 depth，前端不再重建一遍树 */
   .gr { position: relative; cursor: pointer; border-radius: 8px;
@@ -424,9 +608,10 @@
   </div>
   <div class="spacer"></div>
   <div class="ctrl">
-    <div class="seg" id="view-tabs" title="链路：一个任务就是一条链路 —— 发起方开的一件事，以及能顺 parent 溯源回它的全部转派与回推；消息：不分组，一条消息一行">
-      <div class="sg on" data-view="links">链路</div>
-      <div class="sg" data-view="tasks">消息</div>
+    <div class="seg" id="view-tabs" title="链路：一个任务就是一条链路 —— 发起方开的一件事，以及能顺 parent 溯源回它的全部转派与回推；问题：把失败按「原因×发起方×处理方」聚合，相同根因只占一行">
+      <div class="sg" data-view="links">链路</div>
+      <div class="sg" data-view="issues">问题</div>
+      <div class="sg on" data-view="stats">统计</div>
     </div>
     <select id="days">
       <option value="1">今天</option>
@@ -453,6 +638,28 @@
     <div class="live" title="实时事件流"><span class="d" id="live-dot"></span><span id="live-text">连接中</span></div>
   </div>
 </header>
+
+<!-- 快捷筛选：把藏在下拉里的能力摊到台面上，点一下即筛 -->
+<div class="quick" id="quick-bar">
+  <div class="qrow">
+    <span class="ql">时间</span>
+    <span class="qc" data-q="days" data-v="1">今天</span>
+    <span class="qc" data-q="days" data-v="7">近 7 天</span>
+    <span class="qc" data-q="days" data-v="30">近 30 天</span>
+    <span class="qc on" data-q="days" data-v="0">全部</span>
+  </div>
+  <div class="qrow">
+    <span class="ql">状态</span>
+    <span class="qc on" data-q="state" data-v="all">全部</span>
+    <span class="qc bad" data-q="state" data-v="failed">失败</span>
+    <span class="qc" data-q="state" data-v="active">进行中</span>
+    <span class="qc" data-q="state" data-v="done">已完成</span>
+    <span class="qc" data-q="state" data-v="notified">单向通知</span>
+    <span class="qc" data-q="state" data-v="silent">已静默</span>
+  </div>
+</div>
+<!-- 当前生效的筛选，随时可单项清除；不然筛完了自己都忘了开着什么 -->
+<div class="fbar" id="filter-bar" style="display:none"></div>
 
 <div class="stats">
   <div class="st hero link-st"><div class="k">链路</div><div class="v" id="k-links">-</div></div>
@@ -485,6 +692,7 @@
         <div class="tb" data-role="handled">他处理的</div>
       </div>
     </div>
+    <div class="scroller" id="stats-body" style="display:none"></div>
     <div class="scroller" id="task-body">
       <div class="empty"><div class="big">加载中…</div></div>
     </div>
@@ -511,7 +719,9 @@
     days: 0, from: '', to: '', user: '', role: 'all', state: 'all', q: '', userQ: '',
     kpi: {}, users: [], tasks: [], links: [], edges: [], orphan: 0, groups: [], openChains: {},
     total: 0, limit: 500, offset: 0,
-    view: 'links', selected: null, selectedLink: null,
+    view: 'stats', selected: null, selectedLink: null,
+    // 统计面板点下钻带过来的维度，都是可选的，空字符串/null 表示不限
+    error: '', durMin: null, durMax: null, depth: null, struct: '', pair: '',
     flash: {}, loading: false, dirty: false, retention: ''
   };
 
@@ -603,7 +813,9 @@
     });
   }
   function fillState() {
-    var opts = STATE_OPTS[S.view], keep = S.state, ok = false;
+    // 统计视图没有自己的状态口径，借用链路的；
+    // 不做这个兜底 STATE_OPTS['stats'] 会是 undefined，启动时直接报错中断初始化。
+    var opts = STATE_OPTS[S.view] || STATE_OPTS.links, keep = S.state, ok = false;
     $('state').innerHTML = opts.map(function (o) {
       if (o[0] === keep) ok = true;
       return '<option value="' + o[0] + '">' + o[1] + '</option>';
@@ -820,11 +1032,14 @@
     var html = S.groups.map(function (g) {
       var root = g.nodes[0] || {};
       var rm = sm(root.state);
-      var open = S.openChains[g.root_id] === true;   // 默认折叠
-      // 折叠状态下也要一眼看出是谁在通信，不用展开去找。
-      // 同一个人的多个会话算一个人，会话粒度在展开行和拓扑图里看。
+      // 一条链路就一行，不再展开。
+      // 展开里那些环节行，右侧「消息明细」已经完整呈现过一遍（还带正文、状态、耗时），
+      // 在列表里再来一份只是重复，还把列表撑得老长。
       var users = [];
+      var failed = 0;
       g.nodes.forEach(function (n) {
+        // 后端的链路组没有 failed 字段（只有 active/size/nodes），得自己数
+        if (n.state === 'failed' || n.state === 'cancelled') failed += 1;
         [n.requester, n.handler].forEach(function (u) {
           if (u && users.indexOf(u) < 0) users.push(u);
         });
@@ -832,44 +1047,19 @@
       var utext = users.length > 5
         ? users.slice(0, 5).join('、') + ' 等5人（共' + users.length + '人）'
         : users.join('、');
-      var head = '<div class="gh" data-chain-toggle="' + esc(g.root_id) + '">' +
-        '<span class="gcaret' + (open ? ' open' : '') + '">›</span>' +
+      // 整条卡片可点：打开链路抽屉（拓扑图 + 消息明细都在里面）
+      var head = '<div class="gh" data-chain-root="' + esc(g.root_id) + '">' +
         '<span class="gn">' + (g.size > 1 ? g.size + ' 个环节' : '单次消息') + '</span>' +
         '<span class="gsum">' + (esc(root.summary) || '<span class="none">（无正文摘要）</span>') + '</span>' +
         (utext ? '<span class="gusers">' + esc(utext) + '</span>' : '') +
         '<span class="grow"></span>' +
+        (failed ? '<span class="gbadge bad">失败 ' + failed + '</span>' : '') +
         (g.active ? '<span class="gbadge run">进行中</span>' : '') +
         pill(rm) +
-        '<button class="gmap" data-chain-root="' + esc(g.root_id) + '">链路图</button>' +
         '<span class="met">' + esc(hhmm(g.created_at)) + '</span>' +
       '</div>';
-      var rows = g.nodes.map(function (n) {
-        var m = sm(n.state);
-        var ws = n.requester && n.requester === n.handler;
-        var bits = '';
-        if (n.silent) bits += bit('y', '已静默');
-        if (n.error_code) bits += bit('r', n.error_code);
-        if (n.via_endpoint) bits += bit('y', '经入口');
-        return '<div class="gr' + (S.selected === n.task_id ? ' on' : '') +
-            '" data-id="' + esc(n.task_id) + '" style="--c:' +
-            (VCOLOR[m.v] || VCOLOR.d)[1] + ';--d:' + (n.depth || 0) + '">' +
-          '<span class="grail"></span>' +
-          '<div class="l1">' +
-            (n.depth ? '<span class="gtee">└</span>' : '<span class="gdot">●</span>') +
-            who(n.requester, n.requester_session, 'a', ws) +
-            '<span class="dir">→</span>' +
-            who(n.handler, n.handler_session_real || n.handler_session, 'b', ws) +
-            '<span class="grow"></span>' +
-            (bits ? '<span class="bits">' + bits + '</span>' : '') +
-            pill(m) +
-            '<span class="met">' + esc(timingText(n)) + '</span>' +
-          '</div>' +
-          '<div class="l2"><span class="sum grow' + (n.kind === 'notify' ? '' : ' hi') + '">' +
-            (esc(n.summary) || '<span class="none">（无正文摘要）</span>') + '</span></div>' +
-        '</div>';
-      }).join('');
-      return '<div class="gcard' + (g.active ? ' act' : '') + (open ? '' : ' fold') + '" style="--c:' +
-        (VCOLOR[rm.v] || VCOLOR.d)[1] + '">' + head + '<div class="gbody">' + rows + '</div></div>';
+      return '<div class="gcard' + (g.active ? ' act' : '') + '" style="--c:' +
+        (VCOLOR[rm.v] || VCOLOR.d)[1] + '">' + head + '</div>';
     }).join('');
     box.innerHTML = '<div class="glist">' + html + '</div>' + pager();
   }
@@ -1035,6 +1225,19 @@
     }
     return '&days=' + S.days;
   }
+
+  // 统计面板点下钻带来的五个维度。没设的就不拼，
+  // 避免发出 dur_min= 这种空值参数让后端去猜意图。
+  function extraParams() {
+    var qs = '';
+    if (S.error) qs += '&error=' + encodeURIComponent(S.error);
+    if (S.durMin != null) qs += '&dur_min=' + S.durMin;
+    if (S.durMax != null) qs += '&dur_max=' + S.durMax;
+    if (S.depth != null) qs += '&depth=' + S.depth;
+    if (S.struct) qs += '&struct=' + encodeURIComponent(S.struct);
+    if (S.pair) qs += '&pair=' + encodeURIComponent(S.pair);
+    return qs;
+  }
   function rangeText() {
     if (S.days === 'custom') return (S.from || '最早') + ' — ' + (S.to || '今天');
     if (String(S.days) === '0') return '全部历史';
@@ -1064,7 +1267,8 @@
     var lim = Math.max(1, Math.min(200, Math.round(S.limit / 25) || 20));
     var qs = '?limit=' + lim + '&offset=' + S.offset + rangeParams() +
       '&role=' + S.role + '&state=' + encodeURIComponent(S.state) +
-      '&user=' + encodeURIComponent(S.user) + '&q=' + encodeURIComponent(S.q);
+      '&user=' + encodeURIComponent(S.user) + '&q=' + encodeURIComponent(S.q) +
+      extraParams();
     S.groupLimit = lim;
     return api('/api/trace/task-groups' + qs).then(function (d) {
       S.groups = d.groups || []; S.total = d.total || 0;
@@ -1116,8 +1320,74 @@
   }
   function loadList() {
     // 链路 = 任务：走按 parent 溯源分组的接口，不再用按会话对聚合的旧口径
+    if (S.view === 'stats') return loadAnalytics();
+    if (S.view === 'issues') return loadIssues();
     if (S.view === 'links') return loadGroups();
     return loadTasks();
+  }
+
+  // 问题视角：把失败按根因聚合。
+  // 流水列表里看到「找不到对方会话 5 次」是没法行动的，
+  // 得知道是谁发给谁、什么时候开始的，才能去掉那个失效的调用。
+  function loadIssues() {
+    var qs = '?limit=100' + rangeParams() +
+      '&role=' + S.role + '&user=' + encodeURIComponent(S.user) +
+      '&q=' + encodeURIComponent(S.q);
+    return api('/api/trace/failure-issues' + qs).then(function (d) {
+      S.issues = d.issues || [];
+      S.issueTotal = d.total || 0;
+      S.issueFailures = d.total_failures || 0;
+      renderIssues();
+    });
+  }
+
+  function renderIssues() {
+    var box = $('task-body');
+    $('task-title').textContent = S.user ? S.user + ' 相关的失败问题' : '失败问题';
+    if (!S.issues.length) {
+      box.innerHTML = '<div class="empty"><div class="big">这个范围内没有失败</div>' +
+        '<div class="sm">换个时间范围试试。一条 = 一个根因（原因 × 发起方 × 处理方）</div></div>';
+      return;
+    }
+    var max = S.issues.reduce(function (m, x) { return Math.max(m, x.count); }, 0) || 1;
+    var rows = S.issues.map(function (x) {
+      var w = (x.count / max * 100).toFixed(1);
+      var span = (x.first_at && x.last_at && Math.abs(x.last_at - x.first_at) > 86400)
+        ? ymd(x.first_at) + ' 起，持续到 ' + ymd(x.last_at)
+        : (x.first_at ? ymd(x.first_at) + ' 当天' : '时间未记录');
+      return '<div class="issue" data-issue-error="' + esc(x.error_code) + '"' +
+          ' data-issue-pair="' + esc(x.requester + ' → ' + x.handler) + '"' +
+          ' data-issue-label="' + esc(x.label) + '">' +
+        '<div class="ihead">' +
+          '<span class="icount">' + x.count + '</span>' +
+          '<span class="ilabel">' + esc(x.label) + '</span>' +
+          (x.is_new ? '<span class="inew">新出现</span>' : '') +
+          '<span class="grow"></span>' +
+          '<span class="imet">' + esc(span) + '</span>' +
+        '</div>' +
+        '<div class="ibar"><i style="width:' + w + '%"></i></div>' +
+        '<div class="iwho">' +
+          '<b>' + esc(x.requester) + '</b> → <b>' + esc(x.handler) + '</b>' +
+          (x.sessions > 1 ? '<span class="idim">· 涉及 ' + x.sessions + ' 个发起会话</span>' : '') +
+        '</div>' +
+        (x.hint ? '<div class="ihint">' + esc(x.hint) + '</div>' : '') +
+        ((x.samples || []).length
+          ? '<div class="isamp">' + x.samples.slice(0, 3).map(function (s) {
+              return '<span>' + (esc(s.summary) || '（无摘要）') + '</span>';
+            }).join('') + '</div>'
+          : '') +
+      '</div>';
+    }).join('');
+    box.innerHTML = '<div class="ilist">' +
+      '<div class="itip">' + S.issueTotal + ' 个根因，共 ' + S.issueFailures +
+      ' 次失败。按发生次数排序——发生得多的比刚发生一次的更值得先看。点任意一条看具体链路。</div>' +
+      rows + '</div>';
+  }
+
+  function ymd(t) {
+    if (!t) return '?';
+    var d = new Date(t * 1000);
+    return (d.getMonth() + 1) + '-' + d.getDate();
   }
   function reload() {
     if (S.loading) { S.dirty = true; return; }
@@ -1129,6 +1399,419 @@
       if (S.dirty) { S.dirty = false; setTimeout(reload, 200); }
     });
   }
+
+  // ============================================================ 快捷筛选 / 筛选态
+  // 快捷条和顶部下拉是同一份状态的两个入口，必须双向同步，
+  // 否则用户用下拉筛完，快捷条还高亮着旧值，会以为坏了。
+  function syncQuick() {
+    Array.prototype.forEach.call(document.querySelectorAll('.qc'), function (el) {
+      var k = el.getAttribute('data-q'), v = el.getAttribute('data-v'), cur;
+      if (k === 'days') cur = String(S.days);
+      else cur = String(S.state);
+      el.classList.toggle('on', cur === v);
+    });
+    renderFilterBar();
+  }
+
+  function renderFilterBar() {
+    var bar = $('filter-bar'), bits = [];
+    var dayLabel = {1: '今天', 7: '近 7 天', 14: '近 14 天', 30: '近 30 天', 90: '近 90 天'};
+    if (S.days === 'custom') bits.push(['时间', (S.from || '?') + ' — ' + (S.to || '?'), 'days']);
+    else if (Number(S.days) !== 0) bits.push(['时间', dayLabel[S.days] || (S.days + ' 天'), 'days']);
+    var stName = {};
+    (STATE_OPTS[S.view === 'stats' ? 'links' : S.view] || []).forEach(function (o) { stName[o[0]] = o[1]; });
+    // 问题视角只按时间/用户/关键词聚合，不吃 state 和那五个下钻维度。
+    // 把不生效的筛选条挂在上面会让人以为列表被它们筛过（实测截图里就这样）。
+    var drill = S.view !== 'issues';
+    if (drill && S.state && S.state !== 'all') bits.push(['状态', stName[S.state] || S.state, 'state']);
+    if (S.user) bits.push(['用户', S.user + (S.role !== 'all' ? '（' + (S.role === 'sent' ? '他发出的' : '他处理的') + '）' : ''), 'user']);
+    if (S.q) bits.push(['关键词', S.q, 'q']);
+    // 下钻维度也得显出来，否则用户只看到列表变少了却不知道被什么筛了，
+    // 也没地方把它取消。每一项都配一个 ×。
+    if (drill && S.error) {
+      bits.push(['失败原因', (S.errorLabel || S.error), 'error']);
+    }
+    if (drill && (S.durMin != null || S.durMax != null)) {
+      bits.push(['耗时', (S.durLabel || ((S.durMin != null ? S.durMin + 's' : '0') + ' ~ ' +
+        (S.durMax != null ? S.durMax + 's' : '不限'))), 'dur']);
+    }
+    if (drill && S.depth != null) {
+      bits.push(['转派', S.depth === 0 ? '直接发起' : '转派 ' + S.depth + ' 次', 'depth']);
+    }
+    if (drill && S.struct) {
+      bits.push(['结构', S.struct === 'cross' ? '跨用户' : '同用户不同会话', 'struct']);
+    }
+    if (drill && S.pair) bits.push(['会话对', S.pair, 'pair']);
+    if (!bits.length) { bar.style.display = 'none'; bar.innerHTML = ''; return; }
+    bar.style.display = '';
+    bar.innerHTML = '<span style="color:var(--ink-4)">当前筛选</span>' + bits.map(function (b) {
+      return '<span class="ft">' + b[0] + '：<b>' + esc(b[1]) + '</b>' +
+        '<i data-drop="' + b[2] + '" title="清除这一项">×</i></span>';
+    }).join('') + '<span class="fclear" data-drop="all">全部清除</span>';
+  }
+
+  function dropFilter(which) {
+    if (which === 'all') {
+      S.days = 0; S.from = ''; S.to = '';
+      S.state = 'all'; S.user = ''; S.role = 'all'; S.q = '';
+      S.error = ''; S.errorLabel = ''; S.durMin = null; S.durMax = null; S.durLabel = '';
+      S.depth = null; S.struct = ''; S.pair = '';
+    } else if (which === 'days') {
+      S.days = 0; S.from = ''; S.to = '';
+    } else if (which === 'state') S.state = 'all';
+    else if (which === 'user') { S.user = ''; S.role = 'all'; }
+    else if (which === 'q') S.q = '';
+    else if (which === 'error') { S.error = ''; S.errorLabel = ''; }
+    else if (which === 'dur') { S.durMin = null; S.durMax = null; S.durLabel = ''; }
+    else if (which === 'depth') S.depth = null;
+    else if (which === 'struct') S.struct = '';
+    else if (which === 'pair') S.pair = '';
+    $('days').value = String(S.days);
+    $('range-box').style.display = S.days === 'custom' ? 'inline-flex' : 'none';
+    $('state').value = S.state;
+    $('q').value = S.q;
+    S.offset = 0;
+    syncQuick(); reload(); renderUsers();
+  }
+
+  // ============================================================ 统计面板
+  function fmtDur(sec) {
+    if (sec == null) return '-';
+    if (sec < 1) return (sec * 1000).toFixed(0) + 'ms';
+    if (sec < 60) return sec.toFixed(sec < 10 ? 1 : 0) + 's';
+    var m = Math.floor(sec / 60), r = Math.round(sec % 60);
+    if (m < 60) return m + 'm' + (r ? r + 's' : '');
+    return Math.floor(m / 60) + 'h' + (m % 60) + 'm';
+  }
+  function pctText(v) { return v == null ? '-' : (v * 100).toFixed(1) + '%'; }
+
+  // ---------- 图表原语（纯 SVG，零依赖）----------
+  // 配色统一在这里定，别散落各处：同一个状态在饼图/柱图/热力图里必须同色，
+  // 否则一眼扫过去会把不同东西当成同一类。
+  var TONE = {
+    done: '#2f855a', failed: '#d64545', cancelled: '#d69e2e', notified: '#3182ce',
+    working: '#805ad5', queued: '#718096', silent: '#a0aec0', unknown: '#cbd5e0'
+  };
+  var SERIES = ['#4c7fd4', '#2f855a', '#d69e2e', '#a0678f', '#3a9188', '#b4693f',
+                '#6b6fb8', '#8a9a3b', '#c2565b', '#5b8cb8'];
+  var STATE_CN = {
+    done: '已完成', failed: '失败', cancelled: '已取消', notified: '单向通知',
+    working: '处理中', queued: '排队中', silent: '已静默', unknown: '未知'
+  };
+
+  // 环形图。用 pathLength=100 把 dasharray 直接当百分比使，省掉周长换算。
+  function donut(items, opt) {
+    opt = opt || {};
+    var total = items.reduce(function (a, x) { return a + x.value; }, 0);
+    if (!total) return '<div class="snote">这个范围内没有数据。</div>';
+    var acc = 0;
+    var arcs = items.map(function (x) {
+      if (!x.value) return '';
+      var pct = x.value / total * 100;
+      var seg = '<circle cx="60" cy="60" r="42" fill="none" stroke="' + x.color +
+        '" stroke-width="17" pathLength="100" stroke-dasharray="' +
+        pct.toFixed(3) + ' 100" stroke-dashoffset="' + (-acc).toFixed(3) +
+        '" transform="rotate(-90 60 60)"><title>' + esc(x.name) + '　' + x.value +
+        '（' + pct.toFixed(1) + '%）</title></circle>';
+      acc += pct;
+      return seg;
+    }).join('');
+    var mid = '<text x="60" y="57" class="dnum">' + (opt.centerValue != null ? esc(String(opt.centerValue)) : total) +
+      '</text><text x="60" y="73" class="dlab">' + esc(opt.centerLabel || '总计') + '</text>';
+    var legend = items.filter(function (x) { return x.value; }).map(function (x) {
+      return '<div class="dlgi"' + (x.click ? ' data-jump="' + esc(x.click) + '"' : '') + '>' +
+        '<i style="background:' + x.color + '"></i><span class="dn" title="' +
+        esc(x.hint || x.name) + '">' + esc(x.name) + '</span>' +
+        '<b>' + x.value + '</b><em>' + (x.value / total * 100).toFixed(1) + '%</em></div>';
+    }).join('');
+    return '<div class="donut"><svg viewBox="0 0 120 120" class="dsvg">' + arcs + mid + '</svg>' +
+      '<div class="dlegend">' + legend + '</div></div>';
+  }
+
+  // 纵向柱状图。
+  // 不用 SVG：viewBox 配 preserveAspectRatio="none" 会把坐标系非等比拉伸，
+  // 字会被横向拉宽、纵向压扁，4px 的字号渲染出来根本认不出来（实测看不清）。
+  // div 布局里文字就是真实 CSS 像素，多宽都不会变形。
+  function vbars(items, opt) {
+    opt = opt || {};
+    var max = items.reduce(function (m, x) { return Math.max(m, x.value); }, 0) || 1;
+    var cols = items.map(function (x) {
+      var pct = x.value ? Math.max(x.value / max * 100, 1.5) : 0;
+      return '<div class="vbcol' + (x.click ? ' clickable' : '') + '"' +
+        (x.click ? ' data-jump="' + esc(x.click) + '"' : '') +
+        ' title="' + esc(x.name) + '　' + x.value + (x.click ? '　点击查看' : '') + '">' +
+        '<div class="vbbar">' +
+          (x.value
+            ? '<div class="vbfill" style="height:' + pct.toFixed(2) + '%;background:' +
+              (x.color || SERIES[0]) + '"><span class="vbnum">' + x.value + '</span></div>'
+            : '<div class="vbfill zero"><span class="vbnum dim">0</span></div>') +
+        '</div>' +
+        '<div class="vblab">' + esc(x.name) + '</div>' +
+      '</div>';
+    }).join('');
+    return '<div class="vb">' + cols + '</div>' +
+      (opt.note ? '<div class="snote">' + opt.note + '</div>' : '');
+  }
+
+  // 横向条形图：不引图表库，纯 div 宽度百分比，够用且零依赖
+  function barRows(items, opt) {
+    opt = opt || {};
+    var max = items.reduce(function (m, x) { return Math.max(m, x.value); }, 0) || 1;
+    return '<div class="srows">' + items.map(function (x) {
+      var w = (x.value / max * 100).toFixed(1);
+      return '<div class="srow' + (x.click ? ' clickable' : '') + '"' +
+          (x.click ? ' data-jump="' + esc(x.click) + '"' : '') + '>' +
+        '<div class="sname" title="' + esc(x.hint || x.name) + '">' + esc(x.name) + '</div>' +
+        '<div class="strack"><div class="sfill' + (x.tone ? ' ' + x.tone : '') +
+          '" style="width:' + w + '%"></div></div>' +
+        '<div class="sval">' + esc(x.text != null ? x.text : x.value) + '</div>' +
+      '</div>';
+    }).join('') + '</div>' + (opt.note ? '<div class="snote">' + opt.note + '</div>' : '');
+  }
+
+  // 趋势：堆叠柱状图。
+  // 之前只有色块没有任何标注，鼠标不悬停就完全不知道每根柱子是哪天、有多少条——
+  // 现在把日期、数值、刻度线都画出来，不靠 hover 也能读懂。
+  function trendChart(trend) {
+    if (!trend.length) return '<div class="snote">这个范围内没有数据。</div>';
+    var max = trend.reduce(function (m, x) { return Math.max(m, x.total); }, 0) || 1;
+    // 纵轴取整到好看的刻度，不然 37 这种数标出来很别扭
+    var step = Math.pow(10, Math.floor(Math.log(max) / Math.LN10));
+    if (max / step < 2) step = step / 2; else if (max / step > 5) step = step * 2;
+    var top = Math.ceil(max / step) * step;
+    var n = trend.length;
+    // 柱子太多时标签会糊成一团，按间隔抽稀；首尾和峰值必须有标签
+    var labelEvery = n <= 10 ? 1 : n <= 20 ? 2 : n <= 40 ? 4 : Math.ceil(n / 10);
+    var peakIndex = 0;
+    trend.forEach(function (x, i) { if (x.total > trend[peakIndex].total) peakIndex = i; });
+    var bars = trend.map(function (x, i) {
+      var segs = [
+        ['已完成', x.done, TONE.done],
+        ['通知', x.notify, TONE.notified],
+        ['失败', x.failed, TONE.failed]
+      ].filter(function (sg) { return sg[1] > 0; });
+      var stack = segs.map(function (sg) {
+        return '<i style="flex:' + sg[1] + ';background:' + sg[2] + '" title="' +
+          x.date + '　' + sg[0] + ' ' + sg[1] + ' 条"></i>';
+      }).join('');
+      var pct = (x.total / top * 100).toFixed(2);
+      // 首尾、按间隔命中的、以及最高的那根都要有日期——
+      // 峰值最容易被追问「这是哪天」，恰恰没标签就很让人抓狂
+      var showLabel = i % labelEvery === 0 || i === n - 1 || i === peakIndex;
+      // 数值必须跟着柱顶走。放在图表顶端的话，7 和 186 的数字会并排在同一高度，
+      // 根本看不出哪个数字属于哪根柱子。
+      return '<div class="tcol" title="' + x.date + '　共 ' + x.total + ' 条">' +
+        '<div class="tbar">' +
+          (x.total
+            ? '<div class="tfill" style="height:' + pct + '%">' +
+                '<div class="tnum">' + x.total + '</div>' +
+                '<div class="tstack">' + stack + '</div>' +
+              '</div>'
+            : '<div class="tfill zero"><div class="tzero"></div></div>') +
+        '</div>' +
+        '<div class="tdate' + (i === peakIndex ? ' peak' : '') + '">' +
+          (showLabel ? x.date.slice(5) : '') + '</div>' +
+      '</div>';
+    }).join('');
+    // 纵轴刻度线：4 等分
+    var grid = [0, 1, 2, 3, 4].map(function (k) {
+      var v = Math.round(top * (4 - k) / 4);
+      return '<div class="tgline"><span>' + v + '</span></div>';
+    }).join('');
+    return '<div class="tchart2">' +
+        '<div class="tgrid">' + grid + '</div>' +
+        '<div class="tcols">' + bars + '</div>' +
+      '</div>' +
+      '<div class="tlegend2">' +
+        '<i style="background:' + TONE.done + '"></i>已完成' +
+        '<i style="background:' + TONE.notified + '"></i>单向通知' +
+        '<i style="background:' + TONE.failed + '"></i>失败' +
+        '<span class="tnote">柱高 = 当天通信总数，颜色 = 结果构成；没有通信的日子留空</span>' +
+      '</div>';
+  }
+
+  // 时段热力：7×24
+  function heatGrid(heat) {
+    var dows = ['一', '二', '三', '四', '五', '六', '日'];
+    var max = 0;
+    heat.forEach(function (row) { row.forEach(function (v) { max = Math.max(max, v); }); });
+    var head = '<div class="hrow hhead"><span class="hlab"></span>' +
+      Array.apply(null, Array(24)).map(function (_, h) {
+        return '<span class="hcell hno">' + (h % 3 === 0 ? h : '') + '</span>';
+      }).join('') + '</div>';
+    var body = heat.map(function (row, d) {
+      return '<div class="hrow"><span class="hlab">' + dows[d] + '</span>' + row.map(function (v, h) {
+        var a = max ? v / max : 0;
+        var bg = v ? 'rgba(47,133,90,' + (0.12 + a * 0.78).toFixed(2) + ')' : '#f2f4f6';
+        return '<span class="hcell" style="background:' + bg + '" title="周' + dows[d] +
+          ' ' + h + ':00  ' + v + ' 条"></span>';
+      }).join('') + '</div>';
+    }).join('');
+    return '<div class="heat">' + head + body + '</div>' +
+      '<div class="snote">颜色越深表示该时段通信越多，峰值 ' + max + ' 条。悬停看具体数值。</div>';
+  }
+
+  function loadAnalytics() {
+    var p = new URLSearchParams();
+    if (S.days === 'custom' && (S.from || S.to)) { if (S.from) p.set('from', S.from); if (S.to) p.set('to', S.to); }
+    else p.set('days', String(S.days));
+    if (S.user) { p.set('user', S.user); if (S.role !== 'all') p.set('role', S.role); }
+    if (S.state && S.state !== 'all') p.set('state', S.state);
+    if (S.q) p.set('q', S.q);
+    syncQuick();
+    return api('/api/trace/analytics?' + p.toString()).then(function (d) {
+      if (S.view !== 'stats') return;
+      renderAnalytics(d);
+    }).catch(function (e) {
+      $('stats-body').innerHTML = '<div class="empty"><div class="big">统计加载失败</div><div>' +
+        esc(String(e && e.message || e)) + '</div></div>';
+    });
+  }
+
+  function renderAnalytics(d) {
+    var o = d.overview, box = $('stats-body');
+
+    // ---------- 顶部：范围说明 ----------
+    var scope = [];
+    if (d.filter.user) scope.push('用户 ' + d.filter.user);
+    if (d.filter.state && d.filter.state !== 'all') scope.push('状态 ' + d.filter.state);
+    if (d.filter.q) scope.push('关键词「' + d.filter.q + '」');
+    var rangeText = d.since ? (new Date(d.since * 1000).toLocaleDateString() + ' 至今') : '全部历史';
+    var head = '<div class="abar"><b>' + esc(rangeText) + '</b>' +
+      (scope.length ? '<span class="asep">·</span>' + esc(scope.join(' · ')) : '') +
+      '<span class="asep">·</span>' + o.total + ' 条通信' +
+      (d.truncated ? '<span class="swarn">超过 ' + d.scanned + ' 条上限，以下为部分样本</span>' : '') +
+      '<span class="agrow"></span><span class="ahint">改上面的筛选条件，这里的统计会跟着变</span></div>';
+
+    // ---------- 四个核心指标 ----------
+    var rate = o.success_rate;
+    var hero = '<div class="ahero">' +
+      heroCell('总通信', o.total, o.request_total + ' 请求 · ' + o.notify_total + ' 通知', '') +
+      heroCell('成功率', rate == null ? '-' : (rate * 100).toFixed(1) + '%',
+               '分母 ' + o.judged + ' 条，已排除通知', rate == null ? '' : (rate >= 0.95 ? 'ok' : rate >= 0.85 ? 'warn' : 'bad')) +
+      heroCell('失败', o.failed + (o.cancelled ? ' + ' + o.cancelled : ''),
+               o.cancelled ? '失败 + 撤回' : '失败', o.failed ? 'bad' : 'ok') +
+      heroCell('P95 耗时', fmtDur(o.p95), '中位 ' + fmtDur(o.p50) + ' · 最慢 ' + fmtDur(o.max_seconds), '') +
+      '</div>';
+
+    // ---------- 趋势（通栏）----------
+    var tr = card('通信趋势', trendChart(d.trend || []), 'wide');
+
+    // ---------- 状态分布（饼）----------
+    // 每种状态都能点，不只是失败。后端 state 参数本来就支持这几个值。
+    var stItems = (d.by_state || []).map(function (x) {
+      return {name: STATE_CN[x.state] || x.state, value: x.count,
+              color: TONE[x.state] || '#cbd5e0',
+              click: x.state ? 'state=' + x.state : ''};
+    });
+    var pie1 = card('状态分布', donut(stItems, {centerLabel: '条通信'}));
+
+    // ---------- 失败原因（饼）----------
+    var f = d.failures || {};
+    // 只显中文名。error_code 那种字段名是给排查代码的人看的，
+    // 看板的读者要的是「为什么失败」，不是「哪个枚举值」。
+    var errItems = (f.by_code || []).map(function (x, i) {
+      // 以前这里对四个原因全写死 'state=failed'，所以点哪个都跳到「全部失败」。
+      // 必须把 error_code 带上，后端才知道你要看的是哪一种。
+      // state 也不能写死：「发起方撤回」那批实际是 cancelled，
+      // 配上 state=failed 两个条件互斥，结果是 0 条（实测踩过）。
+      var sts = x.states || [];
+      var stq = sts.length === 1 ? sts[0] : 'all';
+      return {name: x.label || x.code, value: x.count, color: SERIES[i % SERIES.length],
+              hint: x.hint || '',
+              click: 'state=' + stq + '&error=' + encodeURIComponent(x.code)};
+    });
+    var pie2 = card('失败原因',
+      (errItems.length
+        ? donut(errItems, {centerLabel: '次失败'}) +
+          '<div class="snote">' + (f.by_code || []).map(function (x) {
+            return x.hint ? '<b>' + esc(x.label || x.code) + '</b>：' + esc(x.hint) : '';
+          }).filter(Boolean).join('<br>') + '</div>'
+        : '<div class="snote">这个范围内没有失败或撤回。</div>'));
+
+    // ---------- 耗时分布（纵柱）----------
+    var du = d.durations || {buckets: [], slowest: []};
+    var dur = card('耗时分布', vbars((du.buckets || []).map(function (x, i) {
+      var q = 'dur_min=' + x.lo + (x.hi === null || x.hi === undefined ? '' : '&dur_max=' + x.hi);
+      return {name: x.label, value: x.count, color: SERIES[0], click: q};
+    }), {note: '只统计真正等过对端的请求，' + o.timed + ' 条参与计算；单向通知投递即终结，不计入。'}));
+
+    // ---------- 通信结构（饼）----------
+    var st = d.structure || {};
+    var stru = card('通信结构', donut([
+      {name: '跨用户', value: st.cross_user || 0, color: SERIES[0], click: 'struct=cross'},
+      {name: '同用户不同会话', value: st.same_user || 0, color: SERIES[4], click: 'struct=self'}
+    ], {centerLabel: '条通信'}));
+
+    // ---------- 链路深度（纵柱）----------
+    // 「1 层」「2 层」这种标签没人看得懂在说什么，改成直白描述
+    var depthName = ['直接发起', '转派 1 次', '转派 2 次', '转派 3 次', '转派 4 次'];
+    var depth = card('任务转派情况', vbars((st.depth || []).map(function (x) {
+      return {name: depthName[x.depth] || ('转派 ' + x.depth + ' 次'), value: x.count,
+              color: x.depth === 0 ? '#9fb3c8' : SERIES[1],
+              click: 'depth=' + x.depth};
+    }), {note: '「直接发起」是本人直接发出的任务；「转派 N 次」表示这条任务是被层层转交 N 手之后才到达执行方的。'}));
+
+    // ---------- 失败归因（横条）----------
+    var fbar = '';
+    if ((f.by_user || []).length) {
+      fbar = card('失败集中在谁身上',
+        '<div class="ssub">按发起用户</div>' +
+        barRows((f.by_user || []).map(function (x) {
+          return {name: x.user, value: x.count, tone: 'bad', click: 'user=' + x.user + '&state=failed'};
+        })) +
+        '<div class="ssub">按会话对</div>' +
+        barRows((f.by_pair || []).map(function (x) {
+          return {name: x.pair, value: x.count, tone: 'bad',
+                  click: 'state=failed&pair=' + encodeURIComponent(x.pair)};
+        })) +
+        '<div class="snote"><b>已取消</b>里混着「实际是对端离线、但随后被撤回覆盖」的记录' +
+        '（中继状态机的已知问题：失败终态会被后到的 cancel 冲掉），所以这里的归因偏保守。</div>');
+    }
+
+    // ---------- 参与者（通栏表）----------
+    var pa = card('参与者', '<table class="stable"><thead><tr>' +
+      '<th>用户</th><th>发起</th><th>处理</th><th>失败</th><th>平均耗时</th></tr></thead><tbody>' +
+      (d.participants || []).map(function (x) {
+        return '<tr data-user="' + esc(x.user) + '"><td>' + esc(x.user) + '</td><td>' + x.sent +
+          '</td><td>' + x.handled + '</td><td class="' + (x.failed ? 'bad' : '') + '">' +
+          x.failed + '</td><td>' + fmtDur(x.avg_seconds) + '</td></tr>';
+      }).join('') + '</tbody></table>', 'wide');
+
+    // ---------- 会话对热度（横条）----------
+    var pairs = card('谁和谁在通信', barRows((d.pairs || []).map(function (x, i) {
+      return {name: x.pair, value: x.count,
+              click: 'pair=' + encodeURIComponent(x.pair)};
+    })));
+
+    // ---------- 最慢请求 ----------
+    var slow = card('最慢的请求',
+      (du.slowest || []).length
+        ? '<div class="slowlist">' + du.slowest.map(function (x) {
+            return '<div class="slow" data-goto="' + esc(x.task_id) + '">' +
+              '<span class="stime">' + fmtDur(x.seconds) + '</span>' +
+              '<span class="sway">' + esc(x.requester) + ' → ' + esc(x.handler) + '</span>' +
+              '<span class="ssum">' + (esc(x.summary) || '（无摘要）') + '</span></div>';
+          }).join('') + '</div>'
+        : '<div class="snote">没有可计时的请求。</div>');
+
+    // ---------- 时段热力（通栏）----------
+    var hm = card('时段分布', heatGrid(d.heatmap || []), 'wide');
+
+    box.innerHTML = head + hero +
+      '<div class="agrid">' + tr + pie1 + pie2 + dur + stru + depth + fbar + pairs + slow + pa + hm + '</div>';
+  }
+
+  function heroCell(label, value, sub, tone) {
+    return '<div class="hcard"><div class="hk">' + esc(label) + '</div>' +
+      '<div class="hv ' + (tone || '') + '">' + esc(String(value)) + '</div>' +
+      '<div class="hs">' + esc(sub) + '</div></div>';
+  }
+  function card(title, body, cls) {
+    return '<section class="acard ' + (cls || '') + '"><h3>' + esc(title) + '</h3>' + body + '</section>';
+  }
+
+
   function switchView(v) {
     if (S.view === v) return;
     S.view = v; S.offset = 0;
@@ -1139,8 +1822,17 @@
     Array.prototype.forEach.call(document.querySelectorAll('.link-st'), function (el) {
       el.classList.toggle('hide', v !== 'links');
     });
-    fillState();
-    $('task-body').innerHTML = '<div class="empty"><div class="big">加载中…</div></div>';
+    // 统计视图有自己的容器，列表和分页在这个视图下没有意义
+    var isStats = v === 'stats';
+    $('stats-body').style.display = isStats ? '' : 'none';
+    $('task-body').style.display = isStats ? 'none' : '';
+    if (isStats) {
+      $('stats-body').innerHTML = '<div class="empty"><div class="big">加载中…</div></div>';
+    } else {
+      // 问题视角只看失败，状态下拉对它没意义，填了反而让人以为能按状态筛
+      if (v !== 'issues') fillState();
+      $('task-body').innerHTML = '<div class="empty"><div class="big">加载中…</div></div>';
+    }
     reload();
   }
   var timer = null;
@@ -1181,12 +1873,12 @@
       S.days = parseInt(this.value, 10);
       $('range-box').style.display = 'none';
     }
-    S.offset = 0; reload();
+    S.offset = 0; syncQuick(); reload();
   });
   $('from').addEventListener('change', function () { S.from = this.value; S.offset = 0; reload(); });
   $('to').addEventListener('change', function () { S.to = this.value; S.offset = 0; reload(); });
   $('limit').addEventListener('change', function () { S.limit = parseInt(this.value, 10); S.offset = 0; loadList(); });
-  $('state').addEventListener('change', function () { S.state = this.value; S.offset = 0; loadList(); });
+  $('state').addEventListener('change', function () { S.state = this.value; S.offset = 0; syncQuick(); loadList(); });
   var qt = null;
   $('q').addEventListener('input', function () {
     var v = this.value;
@@ -1205,6 +1897,67 @@
     });
     renderUsers(); loadList();
   });
+  // 快捷筛选条：点一下即筛，并把顶部下拉同步过去
+  $('quick-bar').addEventListener('click', function (e) {
+    var el = e.target.closest('.qc'); if (!el) return;
+    var k = el.getAttribute('data-q'), v = el.getAttribute('data-v');
+    if (k === 'days') {
+      S.days = parseInt(v, 10);
+      $('days').value = v;
+      $('range-box').style.display = 'none';
+    } else {
+      S.state = v;
+      $('state').value = v;
+    }
+    S.offset = 0; syncQuick(); loadList();
+  });
+  // 筛选态里的 × 与「全部清除」
+  $('filter-bar').addEventListener('click', function (e) {
+    var el = e.target.closest('[data-drop]'); if (!el) return;
+    dropFilter(el.getAttribute('data-drop'));
+  });
+  // 统计面板里的可点项：跳回列表并带上筛选
+  $('stats-body').addEventListener('click', function (e) {
+    var jump = e.target.closest('[data-jump]');
+    if (jump) {
+      var qs = new URLSearchParams(jump.getAttribute('data-jump'));
+      // 这里以前只读 state 和 user，其余参数直接丢掉，
+      // 所以点四个失败原因跳出来的结果全是「全部失败」。
+      // 现在每次下钻先把五个扩展维度清干净，再按本次点击重建，
+      // 否则连续点两个图表会把条件叠在一起，筛出空结果。
+      S.error = ''; S.errorLabel = '';
+      S.durMin = null; S.durMax = null; S.durLabel = '';
+      S.depth = null; S.struct = ''; S.pair = '';
+      S.state = qs.get('state') || 'all';
+      if (qs.get('user')) { S.user = qs.get('user'); S.role = 'all'; }
+      if (qs.get('error')) {
+        S.error = qs.get('error');
+        // 筛选条要显中文，不能把 error_code 抹给用户看
+        var chip = jump.querySelector('.dn') || jump.querySelector('.sname');
+        S.errorLabel = chip ? chip.textContent : S.error;
+      }
+      if (qs.get('dur_min') != null || qs.get('dur_max') != null) {
+        S.durMin = qs.get('dur_min') != null ? Number(qs.get('dur_min')) : null;
+        S.durMax = qs.get('dur_max') != null ? Number(qs.get('dur_max')) : null;
+        var lab = jump.querySelector('.vblab');
+        S.durLabel = lab ? lab.textContent : '';
+      }
+      if (qs.get('depth') != null) S.depth = Number(qs.get('depth'));
+      if (qs.get('struct')) S.struct = qs.get('struct');
+      if (qs.get('pair')) S.pair = qs.get('pair');
+      S.offset = 0;
+      switchView('links');
+      $('state').value = S.state;
+      syncQuick(); renderUsers();
+      return;
+    }
+    var row = e.target.closest('[data-user]');
+    if (row) { S.user = row.getAttribute('data-user'); S.role = 'all'; S.offset = 0;
+      syncQuick(); renderUsers(); loadAnalytics(); return; }
+    var slow = e.target.closest('[data-goto]');
+    if (slow) { S.q = slow.getAttribute('data-goto'); $('q').value = S.q;
+      switchView('links'); syncQuick(); return; }
+  });
   $('view-tabs').addEventListener('click', function (e) {
     var el = e.target.closest('[data-view]');
     if (el) switchView(el.getAttribute('data-view'));
@@ -1222,16 +1975,26 @@
   $('task-body').addEventListener('click', function (e) {
     if (e.target.id === 'pg-prev') { S.offset = Math.max(0, S.offset - pageSize()); loadList(); return; }
     if (e.target.id === 'pg-next') { S.offset += pageSize(); loadList(); return; }
+    // 问题卡片：点一条就把该根因的具体链路筛出来
+    var iss = e.target.closest('[data-issue-error]');
+    if (iss) {
+      S.error = iss.getAttribute('data-issue-error');
+      S.errorLabel = iss.getAttribute('data-issue-label') || S.error;
+      S.pair = iss.getAttribute('data-issue-pair') || '';
+      // 聚合里 cancelled 和 failed 都算失败，这里不能再卡 state，
+      // 否则「发起方撤回」那类会筛空
+      S.state = 'all';
+      S.durMin = null; S.durMax = null; S.durLabel = '';
+      S.depth = null; S.struct = '';
+      S.offset = 0;
+      switchView('links');
+      $('state').value = S.state;
+      syncQuick(); renderUsers();
+      return;
+    }
     var lk = e.target.closest('[data-link]');
     var chainMap = e.target.closest('[data-chain-root]');
     if (chainMap) { openChain(chainMap.getAttribute('data-chain-root')); return; }
-    var tog = e.target.closest('[data-chain-toggle]');
-    if (tog) {
-      var rid = tog.getAttribute('data-chain-toggle');
-      S.openChains[rid] = !S.openChains[rid];
-      renderGroups();
-      return;
-    }
     var branch=e.target.closest('[data-open-branch]');if(branch){openBranch(branch.dataset.openBranch);return;}
     if (lk) { var group=lk.closest('[data-group]');if(group)openBranch(group.dataset.group,lk.dataset.link);else openLink(lk.dataset.link);return; }
     var tk = e.target.closest('[data-id]');
@@ -1262,6 +2025,16 @@
   document.addEventListener('keydown', function (e) { if (e.key === 'Escape') close(); });
 
   // ============================================================ 启动
+  // 启动时不走 switchView，所以容器的显隐要在这里按默认视图先对好，
+  // 否则默认进统计页时会看到空白（面板还是 display:none）。
+  (function () {
+    var isStats = S.view === 'stats';
+    $('stats-body').style.display = isStats ? '' : 'none';
+    $('task-body').style.display = isStats ? 'none' : '';
+    Array.prototype.forEach.call(document.querySelectorAll('.link-st'), function (el) {
+      el.classList.toggle('hide', S.view !== 'links');
+    });
+  })();
   fillState();
   reload();
   stream();

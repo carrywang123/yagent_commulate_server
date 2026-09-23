@@ -30,8 +30,9 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Any, Optional
 
 from fastapi import APIRouter, HTTPException, Query, Request
@@ -261,6 +262,12 @@ async def list_task_groups(
     role: str = Query("all", pattern="^(all|sent|handled)$"),
     state: str = Query("all", description="all/active/done/failed/cancelled/notified/silent"),
     q: str = Query("", description="关键词：摘要 / task_id / conv_id / 会话ID"),
+    error: str = Query("", description="按失败原因筛（error_code，如 session_not_found）"),
+    dur_min: Optional[float] = Query(None, ge=0, description="耗时下限（秒，含）"),
+    dur_max: Optional[float] = Query(None, ge=0, description="耗时上限（秒，不含）"),
+    depth: Optional[int] = Query(None, ge=0, description="转派层数（0=直接发起）"),
+    struct: str = Query("", description="通信结构：cross=跳用户，self=同用户不同会话"),
+    pair: str = Query("", description="会话对，格式 发起方→处理方（用户名或会话ID）"),
     days: Optional[int] = Query(None, ge=0, le=3650),
     from_: Optional[str] = Query(None, alias="from"),
     to: Optional[str] = Query(None),
@@ -299,6 +306,14 @@ async def list_task_groups(
         hit_rows = all_rows
 
     index = {t.task_id: t for t in all_rows}
+
+    # error / dur / depth / struct / pair 这五个维度 SQL 层没有（depth 还得靠 parent 链才能算），
+    # 而 all_rows 已经全量在内存里了，在 Python 层再筛一道比改 SQL 更稳。
+    if error or dur_min is not None or dur_max is not None or depth is not None or struct or pair:
+        hit_rows = [r for r in hit_rows if _node_matches(
+            r, index, error=error, dur_min=dur_min, dur_max=dur_max,
+            depth=depth, struct=struct, pair=pair,
+        )]
 
     # 按源头归组：组里装整条链，而不只是命中的节点
     members: dict[str, list[Any]] = {}
@@ -373,6 +388,163 @@ def _depth_of(task_id: str, index: dict[str, Any]) -> int:
         depth += 1
         cur = parent
     return depth
+
+
+def _node_seconds(row: Any) -> Optional[float]:
+    """单条任务的真实耗时，口径必须跟 analytics 完全一致。
+
+    notify 直接返回 None：单向通知投递即结，耗时恒为 0，
+    按耗时筛的时候把它算进「<1s」会把那个桶泡得很难看。
+    """
+    if str(getattr(row, "kind", "") or "") == "notify":
+        return None
+    started = float(getattr(row, "created_at", 0) or 0)
+    ended = float(getattr(row, "finished_at", 0) or 0)
+    if not started or not ended or ended < started:
+        return None
+    return ended - started
+
+
+def _node_matches(
+    row: Any,
+    index: dict[str, Any],
+    *,
+    error: str = "",
+    dur_min: Optional[float] = None,
+    dur_max: Optional[float] = None,
+    depth: Optional[int] = None,
+    struct: str = "",
+    pair: str = "",
+) -> bool:
+    """单个节点是否命中那五个扩展维度。全部是与关系。"""
+    if error:
+        # error 筛选自带「必须是失败态」的约束。
+        # 否则 error=unknown 会把所有 error_code 为空的记录（包括全部成功的）全捞进来。
+        st = str(getattr(row, "state", "") or "")
+        if st not in ("failed", "cancelled"):
+            return False
+        code = str(getattr(row, "error_code", "") or "")
+        # 统计面板把没写 error_code 的失败归为 unknown，筛选得跟着同口径
+        if (code or "unknown") != error:
+            return False
+    if dur_min is not None or dur_max is not None:
+        sec = _node_seconds(row)
+        if sec is None:
+            return False
+        if dur_min is not None and sec < dur_min:
+            return False
+        if dur_max is not None and sec >= dur_max:
+            return False
+    if depth is not None and _depth_of(row.task_id, index) != depth:
+        return False
+    if struct:
+        rq = str(getattr(row, "requester", "") or "")
+        hd = str(getattr(row, "handler", "") or "")
+        is_cross = rq != hd
+        if struct == "cross" and not is_cross:
+            return False
+        if struct == "self" and is_cross:
+            return False
+    if pair:
+        want = [x.strip() for x in re.split(r"→|->", pair) if x.strip()]
+        if len(want) == 2:
+            a, b = want
+            rq = str(getattr(row, "requester", "") or "")
+            hd = str(getattr(row, "handler", "") or "")
+            rs = str(getattr(row, "requester_session", "") or "")
+            hs = str(getattr(row, "handler_session_real", "") or
+                     getattr(row, "handler_session", "") or "")
+            # 用户名或会话ID 都能匹配：统计面板给的是用户名对，
+            # 拓扑图那边点过来的可能是会话ID 对
+            if not ((a == rq or a == rs) and (b == hd or b == hs)):
+                return False
+    return True
+
+
+@trace_router.get("/failure-issues", summary="失败问题（按 原因 × 会话对 聚合，按影响面排序）")
+async def list_failure_issues(
+    request: Request,
+    user: str = Query("", description="按用户名过滤"),
+    role: str = Query("all", pattern="^(all|sent|handled)$"),
+    q: str = Query("", description="关键词"),
+    days: Optional[int] = Query(None, ge=0, le=3650),
+    from_: Optional[str] = Query(None, alias="from"),
+    to: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+) -> dict[str, Any]:
+    """把散在各条消息里的失败，按【失败原因 × 发起方 × 处理方】归成一个「问题」。
+
+    为什么要聚合：流水列表里看到「找不到对方会话 5 次」是没法行动的，
+    得知道「是谁发给谁」才能去掉那个失效的调用。同一个根因只占一行，
+    配上首次/最近出现时间，还能分清「新冒出来的」和「一直在坏的」。
+
+    排序按发生次数而不是时间：发生 12 次的比刚发生一次的更值得先修。
+    """
+    _guard(request)
+    store = _store(request)
+    now = time.time()
+    since, until = _range(store, days, from_, to)
+
+    _, rows = await asyncio.to_thread(
+        store.query_tasks,
+        since=since, until=until, user=user, role=role,
+        state="all", keyword=q, limit=_ANALYTICS_CAP, offset=0,
+    )
+
+    def g(r: Any, k: str, d: Any = "") -> Any:
+        return getattr(r, k, d)
+
+    issues: dict[tuple, dict[str, Any]] = {}
+    for r in rows:
+        st = str(g(r, "state") or "")
+        if st not in ("failed", "cancelled"):
+            continue
+        code = str(g(r, "error_code") or "") or ("cancelled" if st == "cancelled" else "unknown")
+        rq = str(g(r, "requester") or "?")
+        hd = str(g(r, "handler") or "?")
+        key = (code, rq, hd)
+        at = float(g(r, "created_at", 0) or g(r, "first_seen", 0) or 0)
+        it = issues.get(key)
+        if it is None:
+            it = issues[key] = {
+                "error_code": code,
+                "label": _ERR_LABEL.get(code, code),
+                "hint": _ERR_HINT.get(code, ""),
+                "requester": rq,
+                "handler": hd,
+                "count": 0,
+                "first_at": at,
+                "last_at": at,
+                "samples": [],
+                "_sessions": set(),
+            }
+        it["count"] += 1
+        if at:
+            it["first_at"] = min(it["first_at"] or at, at)
+            it["last_at"] = max(it["last_at"] or at, at)
+        it["_sessions"].add(str(g(r, "requester_session") or ""))
+        if len(it["samples"]) < 5:
+            it["samples"].append({
+                "task_id": str(g(r, "task_id") or ""),
+                "summary": str(g(r, "summary") or ""),
+                "created_at": at,
+            })
+
+    out = sorted(issues.values(), key=lambda x: (-x["count"], -(x["last_at"] or 0)))
+    # 刚出现的问题单独标出来：这类最可能是刚改坏的，优先级比老问题高
+    day_ago = now - 86400
+    for it in out:
+        it["sessions"] = len([s for s in it.pop("_sessions") if s])
+        it["is_new"] = bool(it["first_at"] and it["first_at"] >= day_ago)
+
+    return {
+        "ts": now,
+        "since": since,
+        "until": until,
+        "total": len(out),
+        "total_failures": sum(x["count"] for x in out),
+        "issues": out[:limit],
+    }
 
 
 @trace_router.get("/links", summary="链路列表（按会话对聚合的多轮往返）")
@@ -452,6 +624,282 @@ async def task_events(
     store = _store(request)
     events = await asyncio.to_thread(store.task_events, task_id, limit)
     return {"ts": time.time(), "task_id": task_id, "count": len(events), "events": events}
+
+
+#: 统计面板一次扫描的上限。统计必须和列表用同一套筛选口径，
+#: 否则「统计说有 12 个失败、列表只列出 9 条」这种对不上的情况会让人不敢信数据。
+_ANALYTICS_CAP = 20000
+
+#: 错误码 → 给用户看的中文说法。
+#: 看板是给人看的，直接抹 error_code 出去（PEER_OFFLINE / session_not_found）
+#: 只有写代码的看得懂，所以这里给每个码配一个中文名，前端只显中文。
+_ERR_LABEL = {
+    "PEER_OFFLINE": "对方不在线",
+    "session_not_found": "找不到对方会话",
+    "peer_unreachable": "连上了但发不过去",
+    "no_reply": "对方一直没回复",
+    "rejected": "对方拒绝了请求",
+    "cancelled": "发起方撤回了",
+    "error": "对方执行报错",
+    "timeout": "等超时了",
+    "unknown": "原因不明",
+}
+
+#: 中文名后面的补充说明，告诉用户「为什么会这样」。
+_ERR_HINT = {
+    "PEER_OFFLINE": "对方没启动客户端、没登录，或没连上中继",
+    "session_not_found": "会话已删除，或者地址填错了",
+    "peer_unreachable": "网络或客户端异常，消息没能送达",
+    "no_reply": "多次催办后对方仍未回复",
+    "rejected": "对方主动拒绝，或会话正忙不接新任务",
+    "cancelled": "在等待过程中被手动停掉了",
+    "error": "对方处理时抛了异常",
+    "timeout": "超出等待时限自动结束",
+    "unknown": "没有记录具体原因",
+}
+
+#: 耗时分桶边界（秒）。
+_DUR_BUCKETS = [
+    (0, 1, "<1s"), (1, 5, "1-5s"), (5, 30, "5-30s"),
+    (30, 120, "30s-2m"), (120, 600, "2-10m"), (600, None, ">10m"),
+]
+
+
+def _pct(values: list[float], q: float) -> Optional[float]:
+    """线性插值分位数。values 必须已排序。"""
+    if not values:
+        return None
+    if len(values) == 1:
+        return values[0]
+    pos = (len(values) - 1) * q
+    lo = int(pos)
+    hi = min(lo + 1, len(values) - 1)
+    return values[lo] + (values[hi] - values[lo]) * (pos - lo)
+
+
+@trace_router.get("/analytics", summary="统计面板：概览/趋势/失败/耗时/参与者/时段")
+async def analytics(
+    request: Request,
+    user: str = Query("", description="按用户名过滤（client_id）"),
+    role: str = Query("all", pattern="^(all|sent|handled)$"),
+    state: str = Query("all", description="all/active/done/failed/cancelled/notified/silent"),
+    q: str = Query("", description="关键词：摘要 / task_id / conv_id / 会话ID"),
+    days: Optional[int] = Query(None, ge=0, le=3650),
+    from_: Optional[str] = Query(None, alias="from"),
+    to: Optional[str] = Query(None),
+) -> dict[str, Any]:
+    """统计当前筛选范围内的这批通信。
+
+    口径说明（界面上也要标出来，不然容易被误读）：
+    - 成功率的分母**排除单向通知**：notify 投递成功即终结，没有「成功/失败」之分，
+      把它算进分母会把成功率抬高；
+    - 耗时按 finished_at - created_at 现算（库里没有 total_seconds 列），
+      未终结的任务不计入；
+    - 趋势按天补零，缺失的日子显示为 0，否则柱子间距会骗人。
+    """
+    _guard(request)
+    store = _store(request)
+    now = time.time()
+    since, until = _range(store, days, from_, to)
+
+    total, rows = await asyncio.to_thread(
+        store.query_tasks,
+        since=since, until=until, user=user, role=role,
+        state=state, keyword=q, limit=_ANALYTICS_CAP, offset=0,
+    )
+    truncated = len(rows) >= _ANALYTICS_CAP
+
+    def g(row: Any, name: str, default: Any = None) -> Any:
+        return getattr(row, name, default)
+
+    # ---------- 概览 ----------
+    notify_total = sum(1 for r in rows if g(r, "kind") == "notify")
+    req_total = len(rows) - notify_total
+    by_state: dict[str, int] = {}
+    for r in rows:
+        st = str(g(r, "state") or "unknown")
+        by_state[st] = by_state.get(st, 0) + 1
+    done = by_state.get("done", 0)
+    failed = by_state.get("failed", 0)
+    cancelled = by_state.get("cancelled", 0)
+    active = sum(1 for r in rows if not g(r, "terminal"))
+
+    # 成功率：只在「有成败之分」的请求里算
+    judged = done + failed + cancelled
+    success_rate = (done / judged) if judged else None
+
+    durations: list[float] = []
+    for r in rows:
+        # 单向通知投递即终结，耗时恒为 0，混进来会把 P50 压到失真。
+        # 耗时只统计「真正等过对端」的请求。
+        if g(r, "kind") == "notify":
+            continue
+        fin, crt = g(r, "finished_at"), g(r, "created_at")
+        if fin and crt and fin >= crt:
+            durations.append(float(fin) - float(crt))
+    durations.sort()
+
+    # ---------- 趋势（按天，补零）----------
+    day_map: dict[str, dict[str, int]] = {}
+    for r in rows:
+        crt = g(r, "created_at")
+        if not crt:
+            continue
+        key = datetime.fromtimestamp(float(crt)).strftime("%Y-%m-%d")
+        slot = day_map.setdefault(key, {"total": 0, "done": 0, "failed": 0, "notify": 0})
+        slot["total"] += 1
+        st = g(r, "state")
+        if g(r, "kind") == "notify":
+            slot["notify"] += 1
+        elif st == "failed":
+            slot["failed"] += 1
+        elif st == "done":
+            slot["done"] += 1
+    trend = []
+    if day_map:
+        first = datetime.strptime(min(day_map), "%Y-%m-%d")
+        last = datetime.strptime(max(day_map), "%Y-%m-%d")
+        span = (last - first).days
+        # 跨度太大就不逐日补零了，否则几年历史会返回上千个空点
+        if span <= 120:
+            for i in range(span + 1):
+                d = (first + timedelta(days=i)).strftime("%Y-%m-%d")
+                v = day_map.get(d) or {"total": 0, "done": 0, "failed": 0, "notify": 0}
+                trend.append({"date": d, **v})
+        else:
+            trend = [{"date": d, **day_map[d]} for d in sorted(day_map)]
+
+    # ---------- 失败分析 ----------
+    err_map: dict[str, int] = {}
+    err_states: dict[str, set] = {}
+    fail_user: dict[str, int] = {}
+    fail_pair: dict[str, int] = {}
+    for r in rows:
+        if g(r, "state") not in ("failed", "cancelled"):
+            continue
+        code = str(g(r, "error_code") or "unknown")
+        err_map[code] = err_map.get(code, 0) + 1
+        # 记下每种原因到底出现在哪些状态里。
+        # 前端点「发起方撤回了」时如果硬带 state=failed，
+        # 而这批记录实际是 cancelled，两个条件互斥就会筛出 0 条（实测踩过）。
+        err_states.setdefault(code, set()).add(str(g(r, "state") or ""))
+        who = str(g(r, "requester") or "?")
+        fail_user[who] = fail_user.get(who, 0) + 1
+        pair = f'{who} → {g(r, "handler") or "?"}'
+        fail_pair[pair] = fail_pair.get(pair, 0) + 1
+
+    # ---------- 耗时分桶 ----------
+    buckets = []
+    for lo, hi, label in _DUR_BUCKETS:
+        n = sum(1 for d in durations if d >= lo and (hi is None or d < hi))
+        buckets.append({"label": label, "count": n, "lo": lo, "hi": hi})
+
+    slowest = sorted(
+        (
+            {
+                "task_id": g(r, "task_id"), "summary": g(r, "summary") or "",
+                "requester": g(r, "requester"), "handler": g(r, "handler"),
+                "seconds": float(g(r, "finished_at")) - float(g(r, "created_at")),
+                "state": g(r, "state"),
+            }
+            for r in rows
+            if g(r, "kind") != "notify"
+            and g(r, "finished_at") and g(r, "created_at")
+            and float(g(r, "finished_at")) >= float(g(r, "created_at"))
+        ),
+        key=lambda x: -x["seconds"],
+    )[:10]
+
+    # ---------- 参与者 / 会话对 ----------
+    people: dict[str, dict[str, Any]] = {}
+    pair_map: dict[str, int] = {}
+    for r in rows:
+        req, han = str(g(r, "requester") or "?"), str(g(r, "handler") or "?")
+        st = g(r, "state")
+        a = people.setdefault(req, {"user": req, "sent": 0, "handled": 0, "failed": 0, "secs": []})
+        a["sent"] += 1
+        if st in ("failed", "cancelled"):
+            a["failed"] += 1
+        b = people.setdefault(han, {"user": han, "sent": 0, "handled": 0, "failed": 0, "secs": []})
+        b["handled"] += 1
+        fin, crt = g(r, "finished_at"), g(r, "created_at")
+        if g(r, "kind") != "notify" and fin and crt and float(fin) >= float(crt):
+            a["secs"].append(float(fin) - float(crt))
+        pair_map[f"{req} → {han}"] = pair_map.get(f"{req} → {han}", 0) + 1
+    participants = []
+    for v in people.values():
+        secs = v.pop("secs")
+        v["avg_seconds"] = (sum(secs) / len(secs)) if secs else None
+        participants.append(v)
+    participants.sort(key=lambda x: -(x["sent"] + x["handled"]))
+
+    # ---------- 时段热力：7×24 ----------
+    heat = [[0] * 24 for _ in range(7)]
+    for r in rows:
+        crt = g(r, "created_at")
+        if not crt:
+            continue
+        dt = datetime.fromtimestamp(float(crt))
+        heat[dt.weekday()][dt.hour] += 1
+
+    # ---------- 结构：跨用户 / 同用户、深度 ----------
+    cross = sum(1 for r in rows if g(r, "requester") != g(r, "handler"))
+    index = {g(r, "task_id"): r for r in rows}
+    depth_map: dict[int, int] = {}
+    for r in rows:
+        depth_map[_depth_of(str(g(r, "task_id")), index)] = (
+            depth_map.get(_depth_of(str(g(r, "task_id")), index), 0) + 1
+        )
+
+    return {
+        "ts": now,
+        "since": since, "until": until,
+        "days": days if days is not None else store.default_days,
+        "filter": {"user": user, "role": role, "state": state, "q": q},
+        "truncated": truncated,
+        "scanned": len(rows),
+        "matched_total": total,
+        "overview": {
+            "total": len(rows),
+            "request_total": req_total,
+            "notify_total": notify_total,
+            "done": done, "failed": failed, "cancelled": cancelled,
+            "active": active,
+            "judged": judged,
+            "success_rate": success_rate,
+            "avg_seconds": (sum(durations) / len(durations)) if durations else None,
+            "p50": _pct(durations, 0.50),
+            "p90": _pct(durations, 0.90),
+            "p95": _pct(durations, 0.95),
+            "max_seconds": durations[-1] if durations else None,
+            "timed": len(durations),
+        },
+        "by_state": [{"state": k, "count": v} for k, v in sorted(by_state.items(), key=lambda x: -x[1])],
+        "trend": trend,
+        "failures": {
+            "by_code": [
+                {
+                    "code": k,
+                    "label": _ERR_LABEL.get(k, k),
+                    "count": v,
+                    "hint": _ERR_HINT.get(k, ""),
+                    "states": sorted(x for x in err_states.get(k, set()) if x),
+                }
+                for k, v in sorted(err_map.items(), key=lambda x: -x[1])
+            ],
+            "by_user": [{"user": k, "count": v} for k, v in sorted(fail_user.items(), key=lambda x: -x[1])[:8]],
+            "by_pair": [{"pair": k, "count": v} for k, v in sorted(fail_pair.items(), key=lambda x: -x[1])[:8]],
+        },
+        "durations": {"buckets": buckets, "slowest": slowest},
+        "participants": participants[:12],
+        "pairs": [{"pair": k, "count": v} for k, v in sorted(pair_map.items(), key=lambda x: -x[1])[:10]],
+        "heatmap": heat,
+        "structure": {
+            "cross_user": cross,
+            "same_user": len(rows) - cross,
+            "depth": [{"depth": k, "count": v} for k, v in sorted(depth_map.items())],
+        },
+    }
 
 
 @trace_router.get("/stats", summary="追踪自身运行状况")
